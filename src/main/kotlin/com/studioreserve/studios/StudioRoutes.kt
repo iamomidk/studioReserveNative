@@ -3,6 +3,7 @@ package com.studioreserve.studios
 import com.studioreserve.users.UserRole
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
+import io.ktor.server.auth.authenticate
 import io.ktor.server.auth.principal
 import io.ktor.server.auth.jwt.JWTPrincipal
 import io.ktor.server.request.receive
@@ -20,9 +21,10 @@ private val studioStore = ConcurrentHashMap<UUID, StudioAggregate>()
 
 fun Route.studioRoutes() {
     route("/api/studios") {
-        post {
-            val principal = call.principal<JWTPrincipal>()
-                ?: return@post call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Missing authentication token"))
+        authenticate("auth-jwt") {
+            post {
+                val principal = call.principal<JWTPrincipal>()
+                    ?: return@post call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Missing authentication token"))
 
             val role = principal.toUserRole()
                 ?: return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Unable to determine user role from token"))
@@ -59,11 +61,12 @@ fun Route.studioRoutes() {
                 createdAtIso = Instant.now().toString()
             )
 
-            val roomEntities = request.rooms.map { it.toRoomEntity(studioId) }.toMutableList()
-            val aggregate = StudioAggregate(studioEntity, roomEntities)
-            studioStore[studioId] = aggregate
+                val roomEntities = request.rooms.map { it.toRoomEntity(studioId) }.toMutableList()
+                val aggregate = StudioAggregate(studioEntity, roomEntities)
+                studioStore[studioId] = aggregate
 
-            call.respond(HttpStatusCode.Created, aggregate.toDetailDto())
+                call.respond(HttpStatusCode.Created, aggregate.toDetailDto())
+            }
         }
 
         get {
