@@ -9,12 +9,11 @@ import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
-import java.security.MessageDigest
 import java.time.LocalDateTime
 import java.time.ZoneOffset
-import java.util.Base64
 import java.util.UUID
 import kotlinx.serialization.Serializable
+import org.mindrot.jbcrypt.BCrypt
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.or
@@ -80,6 +79,7 @@ fun Route.authRoutes() {
 
             val userId = UUID.randomUUID()
             val passwordHash = hashPassword(request.password)
+            val assignedRole = UserRole.PHOTOGRAPHER
             val createdAt = LocalDateTime.now(ZoneOffset.UTC)
 
             transaction {
@@ -89,7 +89,7 @@ fun Route.authRoutes() {
                     statement[UsersTable.phoneNumber] = phone
                     statement[UsersTable.email] = normalizedEmail
                     statement[UsersTable.passwordHash] = passwordHash
-                    statement[UsersTable.role] = request.role
+                    statement[UsersTable.role] = assignedRole
                     statement[UsersTable.avatarUrl] = null
                     statement[UsersTable.createdAt] = createdAt
                 }
@@ -99,7 +99,7 @@ fun Route.authRoutes() {
                 accessToken = generateToken(),
                 refreshToken = generateToken(),
                 userId = userId.toString(),
-                role = request.role
+                role = assignedRole
             )
 
             call.respond(HttpStatusCode.Created, response)
@@ -155,12 +155,8 @@ private fun validateRegisterRequest(request: RegisterRequest): String? {
     return null
 }
 
-private fun hashPassword(password: String): String {
-    val digest = MessageDigest.getInstance("SHA-256")
-    val hashed = digest.digest(password.toByteArray(Charsets.UTF_8))
-    return Base64.getEncoder().encodeToString(hashed)
-}
+private fun hashPassword(password: String): String = BCrypt.hashpw(password, BCrypt.gensalt())
 
-private fun verifyPassword(password: String, hash: String): Boolean = hashPassword(password) == hash
+private fun verifyPassword(password: String, hash: String): Boolean = BCrypt.checkpw(password, hash)
 
 private fun generateToken(): String = UUID.randomUUID().toString()
