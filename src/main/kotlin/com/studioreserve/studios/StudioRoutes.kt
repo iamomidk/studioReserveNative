@@ -12,6 +12,7 @@ import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
+import io.ktor.server.routing.put
 import io.ktor.server.routing.route
 import java.util.UUID
 import kotlinx.serialization.Serializable
@@ -22,6 +23,7 @@ import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.select
 import org.jetbrains.exposed.sql.transactions.transaction
+import org.jetbrains.exposed.sql.update
 
 fun Route.studioRoutes() {
     route("/api/studios") {
@@ -59,6 +61,8 @@ fun Route.studioRoutes() {
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse(error))
                 }
 
+                val normalizedPhotos = request.photos.mapNotNull { it.trim().takeIf(String::isNotEmpty) }
+
                 val studio = transaction {
                     val studioId = UUID.randomUUID()
                     StudiosTable.insert { statement ->
@@ -70,7 +74,7 @@ fun Route.studioRoutes() {
                         statement[city] = request.city.trim()
                         statement[address] = request.address.trim()
                         statement[mapCoordinates] = request.mapCoordinates.trim()
-                        statement[photos] = request.photos
+                        statement[photos] = normalizedPhotos
                         statement[verificationStatus] = VerificationStatus.PENDING
                     }
 
@@ -81,6 +85,70 @@ fun Route.studioRoutes() {
                 }
 
                 call.respond(HttpStatusCode.Created, studio)
+            }
+
+            put("/{id}") {
+                val principal = call.principal<UserPrincipal>()
+                    ?: return@put call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Missing authentication token"))
+
+                val role = runCatching { UserRole.valueOf(principal.role) }.getOrNull()
+                    ?: return@put call.respond(HttpStatusCode.Forbidden, ErrorResponse("Unknown user role"))
+
+                if (role != UserRole.STUDIO_OWNER) {
+                    return@put call.respond(HttpStatusCode.Forbidden, ErrorResponse("Studio owner role required"))
+                }
+
+                val ownerId = runCatching { UUID.fromString(principal.userId) }.getOrNull()
+                    ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user id"))
+
+                val studioId = call.parameters["id"]?.let { id ->
+                    runCatching { UUID.fromString(id) }.getOrNull()
+                } ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid studio id"))
+
+                val request = try {
+                    call.receive<UpdateStudioRequest>()
+                } catch (cause: Exception) {
+                    return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request body"))
+                }
+
+                request.validationError()?.let { error ->
+                    return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse(error))
+                }
+
+                val normalizedPhotos = request.photos.mapNotNull { it.trim().takeIf(String::isNotEmpty) }
+
+                val result = transaction {
+                    val studioRow = StudiosTable
+                        .select { StudiosTable.id eq studioId }
+                        .singleOrNull()
+                        ?: return@transaction StudioUpdateResult.NotFound
+
+                    if (studioRow[StudiosTable.ownerId] != ownerId) {
+                        return@transaction StudioUpdateResult.Forbidden
+                    }
+
+                    StudiosTable.update({ StudiosTable.id eq studioId }) { statement ->
+                        statement[name] = request.name.trim()
+                        statement[description] = request.description.trim()
+                        statement[province] = request.province.trim()
+                        statement[city] = request.city.trim()
+                        statement[address] = request.address.trim()
+                        statement[mapCoordinates] = request.mapCoordinates.trim()
+                        statement[photos] = normalizedPhotos
+                    }
+
+                    val updatedRow = StudiosTable
+                        .select { StudiosTable.id eq studioId }
+                        .single()
+
+                    StudioUpdateResult.Success(updatedRow.toStudioDto())
+                }
+
+                when (result) {
+                    StudioUpdateResult.NotFound -> call.respond(HttpStatusCode.NotFound, ErrorResponse("Studio not found"))
+                    StudioUpdateResult.Forbidden -> call.respond(HttpStatusCode.Forbidden, ErrorResponse("You do not own this studio"))
+                    is StudioUpdateResult.Success -> call.respond(HttpStatusCode.OK, result.studio)
+                }
             }
         }
 
@@ -203,6 +271,17 @@ data class CreateStudioRequest(
 )
 
 @Serializable
+data class UpdateStudioRequest(
+    val name: String,
+    val description: String,
+    val province: String,
+    val city: String,
+    val address: String,
+    val mapCoordinates: String,
+    val photos: List<String> = emptyList()
+)
+
+@Serializable
 data class ErrorResponse(val message: String)
 
 private fun CreateStudioRequest.validationError(): String? {
@@ -214,4 +293,20 @@ private fun CreateStudioRequest.validationError(): String? {
     if (mapCoordinates.isBlank()) return "mapCoordinates is required"
     if (photos.any { it.isBlank() }) return "photos cannot contain blank entries"
     return null
+}
+
+private fun UpdateStudioRequest.validationError(): String? = CreateStudioRequest(
+    name = name,
+    description = description,
+    province = province,
+    city = city,
+    address = address,
+    mapCoordinates = mapCoordinates,
+    photos = photos
+).validationError()
+
+private sealed class StudioUpdateResult {
+    data class Success(val studio: StudioDto) : StudioUpdateResult()
+    object NotFound : StudioUpdateResult()
+    object Forbidden : StudioUpdateResult()
 }
