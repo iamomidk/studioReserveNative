@@ -1,14 +1,11 @@
 package com.studioreserve.admin
 
-import com.studioreserve.auth.UserPrincipal
 import com.studioreserve.studios.StudiosTable
 import com.studioreserve.studios.VerificationStatus
-import com.studioreserve.users.UserRole
 import com.studioreserve.users.UsersTable
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.auth.authenticate
-import io.ktor.server.auth.principal
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
@@ -30,20 +27,13 @@ fun Route.adminStudioRoutes() {
     authenticate("auth-jwt") {
         route("/api/admin/studios") {
             get {
-                val principal = call.principal<UserPrincipal>()
-                    ?: return@get call.respond(HttpStatusCode.Unauthorized, AdminErrorResponse("Missing authentication token"))
+                call.ensureAdminPrincipal() ?: return@get
 
-                val role = runCatching { UserRole.valueOf(principal.role) }.getOrNull()
-                    ?: return@get call.respond(HttpStatusCode.Forbidden, AdminErrorResponse("Unknown role"))
-
-                if (role != UserRole.ADMIN) {
-                    return@get call.respond(HttpStatusCode.Forbidden, AdminErrorResponse("Admin privileges required"))
-                }
-
-                val statusParam = call.request.queryParameters["status"]?.uppercase()
-                val statusFilter = statusParam?.let {
+                val statusParam = call.request.queryParameters["verification_status"]
+                    ?: call.request.queryParameters["verificationStatus"]
+                val statusFilter = statusParam?.uppercase()?.let {
                     runCatching { VerificationStatus.valueOf(it) }.getOrElse {
-                        return@get call.respond(HttpStatusCode.BadRequest, AdminErrorResponse("Invalid status filter"))
+                        return@get call.respond(HttpStatusCode.BadRequest, AdminErrorResponse("Invalid verification status filter"))
                     }
                 }
 
@@ -67,15 +57,7 @@ fun Route.adminStudioRoutes() {
             }
 
             patch("/{id}/verification") {
-                val principal = call.principal<UserPrincipal>()
-                    ?: return@patch call.respond(HttpStatusCode.Unauthorized, AdminErrorResponse("Missing authentication token"))
-
-                val role = runCatching { UserRole.valueOf(principal.role) }.getOrNull()
-                    ?: return@patch call.respond(HttpStatusCode.Forbidden, AdminErrorResponse("Unknown role"))
-
-                if (role != UserRole.ADMIN) {
-                    return@patch call.respond(HttpStatusCode.Forbidden, AdminErrorResponse("Admin privileges required"))
-                }
+                call.ensureAdminPrincipal() ?: return@patch
 
                 val studioIdParam = call.parameters["id"]
                     ?: return@patch call.respond(HttpStatusCode.BadRequest, AdminErrorResponse("Studio id is required"))
@@ -143,6 +125,3 @@ data class AdminStudioDto(
 
 @Serializable
 data class UpdateVerificationRequest(val status: VerificationStatus, val reason: String? = null)
-
-@Serializable
-data class AdminErrorResponse(val message: String)

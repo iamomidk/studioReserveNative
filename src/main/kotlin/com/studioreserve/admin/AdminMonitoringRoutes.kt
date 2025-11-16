@@ -1,6 +1,5 @@
 package com.studioreserve.admin
 
-import com.studioreserve.auth.UserPrincipal
 import com.studioreserve.bookings.BookingStatus
 import com.studioreserve.bookings.BookingsTable
 import com.studioreserve.equipment.EquipmentAction
@@ -9,12 +8,10 @@ import com.studioreserve.equipment.EquipmentTable
 import com.studioreserve.payments.PaymentStatus
 import com.studioreserve.studios.RoomsTable
 import com.studioreserve.studios.StudiosTable
-import com.studioreserve.users.UserRole
 import com.studioreserve.users.UsersTable
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.auth.authenticate
-import io.ktor.server.auth.principal
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
@@ -38,33 +35,33 @@ fun Route.adminMonitoringRoutes() {
     authenticate("auth-jwt") {
         route("/api/admin") {
             get("/bookings") {
-                val principal = call.principal<UserPrincipal>()
-                    ?: return@get call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Missing authentication token"))
-
-                val role = runCatching { UserRole.valueOf(principal.role) }.getOrNull()
-                    ?: return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Unknown role"))
-
-                if (role != UserRole.ADMIN) {
-                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Admin role required"))
-                }
+                call.ensureAdminPrincipal() ?: return@get
 
                 val bookingStatus = call.request.queryParameters["status"]?.let { statusValue ->
                     runCatching { BookingStatus.valueOf(statusValue.uppercase()) }.getOrElse {
-                        return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid booking status filter"))
+                        return@get call.respond(HttpStatusCode.BadRequest, AdminErrorResponse("Invalid booking status filter"))
+                    }
+                }
+
+                val paymentStatus = call.request.queryParameters["payment_status"]
+                    ?: call.request.queryParameters["paymentStatus"]
+                val paymentStatusFilter = paymentStatus?.let { value ->
+                    runCatching { PaymentStatus.valueOf(value.uppercase()) }.getOrElse {
+                        return@get call.respond(HttpStatusCode.BadRequest, AdminErrorResponse("Invalid payment status filter"))
                     }
                 }
 
                 val fromDate = call.request.queryParameters["fromDate"]?.let { raw ->
                     parseDateTime(raw) ?: return@get call.respond(
                         HttpStatusCode.BadRequest,
-                        ErrorResponse("fromDate must be an ISO-8601 date time string")
+                        AdminErrorResponse("fromDate must be an ISO-8601 date time string")
                     )
                 }
 
                 val toDate = call.request.queryParameters["toDate"]?.let { raw ->
                     parseDateTime(raw) ?: return@get call.respond(
                         HttpStatusCode.BadRequest,
-                        ErrorResponse("toDate must be an ISO-8601 date time string")
+                        AdminErrorResponse("toDate must be an ISO-8601 date time string")
                     )
                 }
 
@@ -77,6 +74,7 @@ fun Route.adminMonitoringRoutes() {
                     val filters = mutableListOf<Op<Boolean>>()
 
                     bookingStatus?.let { filters += (BookingsTable.bookingStatus eq it) }
+                    paymentStatusFilter?.let { filters += (BookingsTable.paymentStatus eq it) }
                     fromDate?.let { filters += (BookingsTable.startTime greaterEq it) }
                     toDate?.let { filters += (BookingsTable.startTime lessEq it) }
 
@@ -97,7 +95,7 @@ fun Route.adminMonitoringRoutes() {
                                 photographerName = row[UsersTable.name],
                                 startTime = row[BookingsTable.startTime].toString(),
                                 endTime = row[BookingsTable.endTime].toString(),
-                                totalPrice = row[BookingsTable.totalPrice].toInt(),
+                                totalPrice = row[BookingsTable.totalPrice].toDouble(),
                                 bookingStatus = row[BookingsTable.bookingStatus],
                                 paymentStatus = row[BookingsTable.paymentStatus]
                             )
@@ -108,45 +106,37 @@ fun Route.adminMonitoringRoutes() {
             }
 
             get("/equipment-logs") {
-                val principal = call.principal<UserPrincipal>()
-                    ?: return@get call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Missing authentication token"))
-
-                val role = runCatching { UserRole.valueOf(principal.role) }.getOrNull()
-                    ?: return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Unknown role"))
-
-                if (role != UserRole.ADMIN) {
-                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Admin role required"))
-                }
+                call.ensureAdminPrincipal() ?: return@get
 
                 val studioIdFilter = call.request.queryParameters["studioId"]?.let { idValue ->
                     runCatching { UUID.fromString(idValue) }.getOrElse {
-                        return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("studioId must be a valid UUID"))
+                        return@get call.respond(HttpStatusCode.BadRequest, AdminErrorResponse("studioId must be a valid UUID"))
                     }
                 }
 
                 val equipmentIdFilter = call.request.queryParameters["equipmentId"]?.let { idValue ->
                     runCatching { UUID.fromString(idValue) }.getOrElse {
-                        return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("equipmentId must be a valid UUID"))
+                        return@get call.respond(HttpStatusCode.BadRequest, AdminErrorResponse("equipmentId must be a valid UUID"))
                     }
                 }
 
                 val actionFilter = call.request.queryParameters["action"]?.let { actionValue ->
                     runCatching { EquipmentAction.valueOf(actionValue.uppercase()) }.getOrElse {
-                        return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid equipment action filter"))
+                        return@get call.respond(HttpStatusCode.BadRequest, AdminErrorResponse("Invalid equipment action filter"))
                     }
                 }
 
                 val fromDate = call.request.queryParameters["fromDate"]?.let { raw ->
                     parseDateTime(raw) ?: return@get call.respond(
                         HttpStatusCode.BadRequest,
-                        ErrorResponse("fromDate must be an ISO-8601 date time string")
+                        AdminErrorResponse("fromDate must be an ISO-8601 date time string")
                     )
                 }
 
                 val toDate = call.request.queryParameters["toDate"]?.let { raw ->
                     parseDateTime(raw) ?: return@get call.respond(
                         HttpStatusCode.BadRequest,
-                        ErrorResponse("toDate must be an ISO-8601 date time string")
+                        AdminErrorResponse("toDate must be an ISO-8601 date time string")
                     )
                 }
 
@@ -201,7 +191,7 @@ data class AdminBookingSummaryDto(
     val photographerName: String,
     val startTime: String,
     val endTime: String,
-    val totalPrice: Int,
+    val totalPrice: Double,
     val bookingStatus: BookingStatus,
     val paymentStatus: PaymentStatus
 )
@@ -217,9 +207,6 @@ data class AdminEquipmentLogDto(
     val timestamp: String,
     val notes: String?
 )
-
-@Serializable
-private data class ErrorResponse(val message: String)
 
 private fun parseDateTime(raw: String): LocalDateTime? {
     return runCatching { OffsetDateTime.parse(raw).toLocalDateTime() }
