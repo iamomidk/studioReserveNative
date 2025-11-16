@@ -5,6 +5,7 @@ import com.zaxxer.hikari.HikariDataSource
 import com.studioreserve.studios.RoomsTable
 import com.studioreserve.studios.StudiosTable
 import com.studioreserve.users.UsersTable
+import com.studioreserve.settings.SystemSettingsTable
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.SchemaUtils
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -36,7 +37,7 @@ object DatabaseConfig {
     fun initDatabase() {
         Database.connect(dataSource)
         transaction {
-            SchemaUtils.create(UsersTable, StudiosTable, RoomsTable)
+            SchemaUtils.create(UsersTable, StudiosTable, RoomsTable, SystemSettingsTable)
         }
         logger.info("Database initialized and tables ensured")
     }

@@ -1,6 +1,7 @@
 package com.studioreserve.config
 
 import com.studioreserve.admin.adminRoutes
+import com.studioreserve.admin.adminSettingsRoutes
 import com.studioreserve.auth.authRoutes
 import com.studioreserve.bookings.bookingRoutes
 import com.studioreserve.equipment.equipmentRoutes
@@ -19,5 +20,6 @@ fun Application.configureRouting() {
         equipmentRoutes()
         paymentRoutes()
         adminRoutes()
+        adminSettingsRoutes()
     }
 }
