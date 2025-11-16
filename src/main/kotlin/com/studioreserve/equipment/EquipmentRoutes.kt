@@ -1,5 +1,6 @@
 package com.studioreserve.equipment
 
+import com.studioreserve.config.StudioOwnersTable
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.request.receive
@@ -9,7 +10,9 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import kotlinx.serialization.Serializable
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
 import org.jetbrains.exposed.sql.Table
+import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.select
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -129,6 +132,15 @@ fun generateBarcodeForEquipment(equipmentId: String) {
 }
 
 private fun validateStudioOwnership(userId: Int, requestedStudioIds: List<Int>): List<Int> {
-    // TODO: Replace with real ownership validation when studio ownership data is available
-    return requestedStudioIds.distinct()
+    if (requestedStudioIds.isEmpty()) return emptyList()
+
+    return transaction {
+        StudioOwnersTable
+            .slice(StudioOwnersTable.studioId)
+            .select {
+                (StudioOwnersTable.ownerId eq userId) and
+                    (StudioOwnersTable.studioId inList requestedStudioIds)
+            }
+            .map { it[StudioOwnersTable.studioId] }
+    }
 }

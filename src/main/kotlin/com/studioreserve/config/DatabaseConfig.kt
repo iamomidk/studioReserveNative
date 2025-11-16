@@ -34,7 +34,7 @@ object DatabaseConfig {
     fun initDatabase() {
         Database.connect(dataSource)
         transaction {
-            SchemaUtils.create(UsersTable, StudiosTable)
+            SchemaUtils.create(UsersTable, StudiosTable, StudioOwnersTable)
         }
         logger.info("Database initialized and tables ensured")
     }
@@ -54,4 +54,11 @@ object StudiosTable : Table("studios") {
     val location = varchar("location", length = 255).nullable()
 
     override val primaryKey = PrimaryKey(id)
+}
+
+object StudioOwnersTable : Table("studio_owners") {
+    val studioId = integer("studio_id") references StudiosTable.id
+    val ownerId = integer("owner_id") references UsersTable.id
+
+    override val primaryKey = PrimaryKey(studioId, ownerId)
 }
