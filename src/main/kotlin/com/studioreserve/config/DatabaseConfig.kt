@@ -1,10 +1,11 @@
 package com.studioreserve.config
 
-import com.zaxxer.hikari.HikariConfig
-import com.zaxxer.hikari.HikariDataSource
+import com.studioreserve.auth.RefreshTokensTable
 import com.studioreserve.studios.RoomsTable
 import com.studioreserve.studios.StudiosTable
 import com.studioreserve.users.UsersTable
+import com.zaxxer.hikari.HikariConfig
+import com.zaxxer.hikari.HikariDataSource
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.SchemaUtils
 import org.jetbrains.exposed.sql.transactions.transaction
@@ -36,7 +37,7 @@ object DatabaseConfig {
     fun initDatabase() {
         Database.connect(dataSource)
         transaction {
-            SchemaUtils.create(UsersTable, StudiosTable, RoomsTable)
+            SchemaUtils.create(UsersTable, StudiosTable, RoomsTable, RefreshTokensTable)
         }
         logger.info("Database initialized and tables ensured")
     }

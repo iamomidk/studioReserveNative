@@ -1,13 +1,14 @@
 package com.studioreserve.rooms
 
-import com.studioreserve.auth.UserPrincipal
+import com.studioreserve.auth.AuthorizationException
+import com.studioreserve.auth.currentUserId
+import com.studioreserve.auth.requireRole
 import com.studioreserve.studios.RoomsTable
 import com.studioreserve.studios.StudiosTable
 import com.studioreserve.users.UserRole
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.auth.authenticate
-import io.ktor.server.auth.principal
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
@@ -27,18 +28,27 @@ fun Route.roomRoutes() {
     route("/api/rooms") {
         authenticate("auth-jwt") {
             post {
-                val principal = call.principal<UserPrincipal>()
-                    ?: return@post call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Missing authentication token"))
-
-                val role = runCatching { UserRole.valueOf(principal.role) }.getOrNull()
-                    ?: return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Unknown role"))
+                val role = runCatching { call.requireRole(UserRole.STUDIO_OWNER) }.getOrElse { throwable ->
+                    val authEx = throwable as? AuthorizationException
+                        ?: return@post call.respond(
+                            HttpStatusCode.InternalServerError,
+                            ErrorResponse(throwable.localizedMessage ?: "Unexpected error")
+                        )
+                    return@post call.respond(authEx.status, ErrorResponse(authEx.message))
+                }
 
                 if (role != UserRole.STUDIO_OWNER) {
                     return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Only studio owners can create rooms"))
                 }
 
-                val ownerId = runCatching { UUID.fromString(principal.userId) }.getOrNull()
-                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user id"))
+                val ownerId = runCatching { call.currentUserId() }.getOrElse { throwable ->
+                    val authEx = throwable as? AuthorizationException
+                        ?: return@post call.respond(
+                            HttpStatusCode.InternalServerError,
+                            ErrorResponse(throwable.localizedMessage ?: "Unexpected error")
+                        )
+                    return@post call.respond(authEx.status, ErrorResponse(authEx.message))
+                }
 
                 val request = runCatching { call.receive<CreateRoomRequest>() }.getOrElse {
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request payload"))
@@ -87,18 +97,27 @@ fun Route.roomRoutes() {
             }
 
             put("/{id}") {
-                val principal = call.principal<UserPrincipal>()
-                    ?: return@put call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Missing authentication token"))
-
-                val role = runCatching { UserRole.valueOf(principal.role) }.getOrNull()
-                    ?: return@put call.respond(HttpStatusCode.Forbidden, ErrorResponse("Unknown role"))
+                val role = runCatching { call.requireRole(UserRole.STUDIO_OWNER) }.getOrElse { throwable ->
+                    val authEx = throwable as? AuthorizationException
+                        ?: return@put call.respond(
+                            HttpStatusCode.InternalServerError,
+                            ErrorResponse(throwable.localizedMessage ?: "Unexpected error")
+                        )
+                    return@put call.respond(authEx.status, ErrorResponse(authEx.message))
+                }
 
                 if (role != UserRole.STUDIO_OWNER) {
                     return@put call.respond(HttpStatusCode.Forbidden, ErrorResponse("Only studio owners can update rooms"))
                 }
 
-                val ownerId = runCatching { UUID.fromString(principal.userId) }.getOrNull()
-                    ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user id"))
+                val ownerId = runCatching { call.currentUserId() }.getOrElse { throwable ->
+                    val authEx = throwable as? AuthorizationException
+                        ?: return@put call.respond(
+                            HttpStatusCode.InternalServerError,
+                            ErrorResponse(throwable.localizedMessage ?: "Unexpected error")
+                        )
+                    return@put call.respond(authEx.status, ErrorResponse(authEx.message))
+                }
 
                 val roomIdParam = call.parameters["id"]
                     ?: return@put call.respond(HttpStatusCode.BadRequest, ErrorResponse("Room id is required"))

@@ -1,26 +1,16 @@
 package com.studioreserve.auth
 
 import com.studioreserve.users.UserRole
-import com.studioreserve.users.UsersTable
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
+import io.ktor.server.auth.authenticate
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
+import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
-import java.security.MessageDigest
-import java.time.LocalDateTime
-import java.time.ZoneOffset
-import java.util.Base64
-import java.util.UUID
 import kotlinx.serialization.Serializable
-import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
-import org.jetbrains.exposed.sql.insert
-import org.jetbrains.exposed.sql.or
-import org.jetbrains.exposed.sql.select
-import org.jetbrains.exposed.sql.singleOrNull
-import org.jetbrains.exposed.sql.transactions.transaction
 
 @Serializable
 data class RegisterRequest(
@@ -38,6 +28,9 @@ data class LoginRequest(
 )
 
 @Serializable
+data class RefreshTokenRequest(val refreshToken: String)
+
+@Serializable
 data class AuthResponse(
     val accessToken: String,
     val refreshToken: String,
@@ -45,104 +38,91 @@ data class AuthResponse(
     val role: UserRole
 )
 
-fun Route.authRoutes() {
+@Serializable
+private data class AuthErrorResponse(val message: String)
+
+fun Route.authRoutes(controller: AuthController = AuthController()) {
     route("/api/auth") {
         post("/register") {
             val request = runCatching { call.receive<RegisterRequest>() }.getOrElse {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Invalid request payload"))
+                call.respond(HttpStatusCode.BadRequest, AuthErrorResponse("Invalid request payload"))
                 return@post
             }
 
             val validationError = validateRegisterRequest(request)
             if (validationError != null) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to validationError))
+                call.respond(HttpStatusCode.BadRequest, AuthErrorResponse(validationError))
                 return@post
             }
 
-            val normalizedEmail = request.email?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
-            val phone = request.phoneNumber.trim()
-
-            val conflictMessage = transaction {
-                when {
-                    UsersTable.select { UsersTable.phoneNumber eq phone }.empty().not() ->
-                        "Phone number already registered"
-                    normalizedEmail != null &&
-                        UsersTable.select { UsersTable.email eq normalizedEmail }.empty().not() ->
-                        "Email already registered"
-                    else -> null
+            runCatching { controller.register(request) }.fold(
+                onSuccess = { auth ->
+                    call.respond(HttpStatusCode.Created, auth)
+                },
+                onFailure = { throwable ->
+                    call.handleAuthException(throwable)
                 }
-            }
-
-            if (conflictMessage != null) {
-                call.respond(HttpStatusCode.Conflict, mapOf("error" to conflictMessage))
-                return@post
-            }
-
-            val userId = UUID.randomUUID()
-            val passwordHash = hashPassword(request.password)
-            val createdAt = LocalDateTime.now(ZoneOffset.UTC)
-
-            transaction {
-                UsersTable.insert { statement ->
-                    statement[UsersTable.id] = userId
-                    statement[UsersTable.name] = request.name.trim()
-                    statement[UsersTable.phoneNumber] = phone
-                    statement[UsersTable.email] = normalizedEmail
-                    statement[UsersTable.passwordHash] = passwordHash
-                    statement[UsersTable.role] = request.role
-                    statement[UsersTable.avatarUrl] = null
-                    statement[UsersTable.createdAt] = createdAt
-                }
-            }
-
-            val response = AuthResponse(
-                accessToken = generateToken(),
-                refreshToken = generateToken(),
-                userId = userId.toString(),
-                role = request.role
             )
-
-            call.respond(HttpStatusCode.Created, response)
         }
 
         post("/login") {
             val request = runCatching { call.receive<LoginRequest>() }.getOrElse {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Invalid request payload"))
+                call.respond(HttpStatusCode.BadRequest, AuthErrorResponse("Invalid request payload"))
                 return@post
             }
 
             if (request.phoneOrEmail.isBlank() || request.password.isBlank()) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Phone/email and password are required"))
+                call.respond(HttpStatusCode.BadRequest, AuthErrorResponse("Phone/email and password are required"))
                 return@post
             }
 
-            val identifier = request.phoneOrEmail.trim()
-            val normalizedEmail = identifier.lowercase()
-
-            val userRow = transaction {
-                UsersTable
-                    .select {
-                        (UsersTable.phoneNumber eq identifier) or
-                            (UsersTable.email eq normalizedEmail)
-                    }
-                    .singleOrNull()
-            }
-
-            if (userRow == null || !verifyPassword(request.password, userRow[UsersTable.passwordHash])) {
-                call.respond(HttpStatusCode.BadRequest, mapOf("error" to "Invalid credentials"))
-                return@post
-            }
-
-            val response = AuthResponse(
-                accessToken = generateToken(),
-                refreshToken = generateToken(),
-                userId = userRow[UsersTable.id].toString(),
-                role = userRow[UsersTable.role]
+            runCatching { controller.login(request) }.fold(
+                onSuccess = { auth -> call.respond(HttpStatusCode.OK, auth) },
+                onFailure = { throwable -> call.handleAuthException(throwable) }
             )
+        }
 
-            call.respond(HttpStatusCode.OK, response)
+        post("/refresh") {
+            val request = runCatching { call.receive<RefreshTokenRequest>() }.getOrElse {
+                call.respond(HttpStatusCode.BadRequest, AuthErrorResponse("Invalid request payload"))
+                return@post
+            }
+
+            if (request.refreshToken.isBlank()) {
+                call.respond(HttpStatusCode.BadRequest, AuthErrorResponse("refreshToken is required"))
+                return@post
+            }
+
+            runCatching { controller.refresh(request.refreshToken) }.fold(
+                onSuccess = { auth -> call.respond(HttpStatusCode.OK, auth) },
+                onFailure = { throwable -> call.handleAuthException(throwable) }
+            )
+        }
+
+        authenticate("auth-jwt") {
+            get("/me") {
+                val userId = runCatching { currentUserId() }.getOrElse {
+                    call.respond(HttpStatusCode.BadRequest, AuthErrorResponse("Invalid user id claim"))
+                    return@get
+                }
+
+                runCatching { controller.me(userId) }.fold(
+                    onSuccess = { me -> call.respond(HttpStatusCode.OK, me) },
+                    onFailure = { throwable -> call.handleAuthException(throwable) }
+                )
+            }
         }
     }
+}
+
+private suspend fun io.ktor.server.application.ApplicationCall.handleAuthException(throwable: Throwable) {
+    val exception = throwable as? AuthException
+        ?: return respond(
+            HttpStatusCode.InternalServerError,
+            AuthErrorResponse(throwable.localizedMessage ?: "Unexpected server error")
+        )
+
+    respond(exception.status, AuthErrorResponse(exception.message))
 }
 
 private fun validateRegisterRequest(request: RegisterRequest): String? {
@@ -154,13 +134,3 @@ private fun validateRegisterRequest(request: RegisterRequest): String? {
     }
     return null
 }
-
-private fun hashPassword(password: String): String {
-    val digest = MessageDigest.getInstance("SHA-256")
-    val hashed = digest.digest(password.toByteArray(Charsets.UTF_8))
-    return Base64.getEncoder().encodeToString(hashed)
-}
-
-private fun verifyPassword(password: String, hash: String): Boolean = hashPassword(password) == hash
-
-private fun generateToken(): String = UUID.randomUUID().toString()
