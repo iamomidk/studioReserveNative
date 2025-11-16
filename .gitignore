@@ -1,6 +1,11 @@
-# Gradle files
+# Gradle build outputs
 .gradle/
 build/
+
+# Prevent committing wrapper binaries or scripts that are disallowed in this environment
+gradle/
+gradlew
+gradlew.bat
 
 # Local configuration file (sdk path, etc)
 local.properties
