@@ -9,8 +9,8 @@ object PaymentsTable : Table("payments") {
     val amount = decimal("amount", 12, 2)
     val gateway = enumerationByName("gateway", 50, PaymentGateway::class)
     val status = enumerationByName("status", 50, PaymentStatus::class)
-    val timestamp = datetime("timestamp")
-    val transactionRef = varchar("transaction_ref", 100)
+    val timestamp = datetime("timestamp").nullable()
+    val transactionRef = varchar("transaction_ref", 100).nullable()
 
     override val primaryKey = PrimaryKey(id)
 }
