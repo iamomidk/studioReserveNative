@@ -1,7 +1,6 @@
 package com.studioreserve.studios
 
 import com.studioreserve.auth.UserPrincipal
-import com.studioreserve.rooms.RoomDto
 import com.studioreserve.users.UserRole
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
@@ -15,9 +14,9 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import java.util.UUID
 import kotlinx.serialization.Serializable
+import org.jetbrains.exposed.sql.Op
 import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
-import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
 import org.jetbrains.exposed.sql.and
 import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.select
@@ -31,26 +30,27 @@ fun Route.studioRoutes() {
                     ?: return@post call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Missing authentication token"))
 
                 val role = runCatching { UserRole.valueOf(principal.role) }.getOrNull()
-                    ?: return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Unknown role"))
+                    ?: return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Unknown user role"))
 
                 if (role != UserRole.STUDIO_OWNER) {
-                    return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Only studio owners can create studios"))
+                    return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Studio owner role required"))
                 }
 
                 val ownerId = runCatching { UUID.fromString(principal.userId) }.getOrNull()
                     ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user id"))
 
-                val request = runCatching { call.receive<CreateStudioRequest>() }.getOrElse {
-                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request payload"))
+                val request = try {
+                    call.receive<CreateStudioRequest>()
+                } catch (cause: Exception) {
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request body"))
                 }
 
-                request.validationError()?.let { message ->
-                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse(message))
+                request.validationError()?.let { error ->
+                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse(error))
                 }
 
-                val response = transaction {
+                val studio = transaction {
                     val studioId = UUID.randomUUID()
-                    val sanitizedPhotos = request.photos.mapNotNull { it.trim().takeIf(String::isNotEmpty) }
                     StudiosTable.insert { statement ->
                         statement[id] = studioId
                         statement[ownerId] = ownerId
@@ -60,91 +60,56 @@ fun Route.studioRoutes() {
                         statement[city] = request.city.trim()
                         statement[address] = request.address.trim()
                         statement[mapCoordinates] = request.mapCoordinates.trim()
-                        statement[photos] = sanitizedPhotos
+                        statement[photos] = request.photos
                         statement[verificationStatus] = VerificationStatus.PENDING
                     }
-                    StudiosTable.select { StudiosTable.id eq studioId }.single().toStudioDto()
+
+                    StudiosTable
+                        .select { StudiosTable.id eq studioId }
+                        .single()
+                        .toStudioDto()
                 }
 
-                call.respond(HttpStatusCode.Created, response)
+                call.respond(HttpStatusCode.Created, studio)
             }
         }
 
         get {
-            val provinceFilter = call.request.queryParameters["province"]?.trim()?.lowercase()
-            val cityFilter = call.request.queryParameters["city"]?.trim()?.lowercase()
+            val provinceFilter = call.request.queryParameters["province"]?.takeIf(String::isNotBlank)
+            val cityFilter = call.request.queryParameters["city"]?.takeIf(String::isNotBlank)
 
-            val minPriceParam = call.request.queryParameters["minPrice"]
-            val maxPriceParam = call.request.queryParameters["maxPrice"]
-
-            val minPrice = minPriceParam?.toIntOrNull()
-                ?: if (minPriceParam == null) null else return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("minPrice must be a number"))
-            val maxPrice = maxPriceParam?.toIntOrNull()
-                ?: if (maxPriceParam == null) null else return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("maxPrice must be a number"))
-
-            if (minPrice != null && maxPrice != null && minPrice > maxPrice) {
-                return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("minPrice cannot be greater than maxPrice"))
-            }
+            // TODO: Support price-based filters when pricing data becomes available.
 
             val studios = transaction {
-                val approvedStudios = StudiosTable
-                    .select { StudiosTable.verificationStatus eq VerificationStatus.APPROVED }
-                    .toList()
+                val initialCondition: Op<Boolean> = StudiosTable.verificationStatus eq VerificationStatus.APPROVED
+                val conditions = listOfNotNull(
+                    provinceFilter?.let { StudiosTable.province eq it },
+                    cityFilter?.let { StudiosTable.city eq it }
+                ).fold(initialCondition) { acc, op -> acc and op }
 
-                val provinceFiltered = provinceFilter?.let { filter ->
-                    approvedStudios.filter { it[StudiosTable.province].trim().lowercase() == filter }
-                } ?: approvedStudios
-
-                val cityFiltered = cityFilter?.let { filter ->
-                    provinceFiltered.filter { it[StudiosTable.city].trim().lowercase() == filter }
-                } ?: provinceFiltered
-
-                val studioIds = cityFiltered.map { it[StudiosTable.id] }
-                val roomsByStudio = if (studioIds.isEmpty()) {
-                    emptyMap()
-                } else {
-                    RoomsTable
-                        .select { RoomsTable.studioId inList studioIds }
-                        .groupBy { it[RoomsTable.studioId] }
-                }
-
-                val priceFiltered = cityFiltered.filter { row ->
-                    val studioId = row[StudiosTable.id]
-                    val studioRooms = roomsByStudio[studioId]
-                    if (minPrice == null && maxPrice == null) {
-                        true
-                    } else {
-                        val minRoomPrice = studioRooms?.minOfOrNull { it[RoomsTable.hourlyPrice] }
-                        if (minRoomPrice == null) {
-                            false
-                        } else {
-                            val minCheck = minPrice?.let { minRoomPrice >= it } ?: true
-                            val maxCheck = maxPrice?.let { minRoomPrice <= it } ?: true
-                            minCheck && maxCheck
-                        }
-                    }
-                }
-
-                priceFiltered.map { it.toStudioDto() }
+                StudiosTable
+                    .select { conditions }
+                    .map { it.toStudioDto() }
             }
 
-            call.respond(StudiosResponse(studios))
+            call.respond(studios)
         }
 
         get("/{id}") {
-            val idParam = call.parameters["id"]
-                ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Studio id is required"))
-
-            val studioId = runCatching { UUID.fromString(idParam) }.getOrElse {
-                return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid studio id"))
-            }
+            val studioId = call.parameters["id"]?.let { id ->
+                runCatching { UUID.fromString(id) }.getOrNull()
+            } ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid studio id"))
 
             val detail = transaction {
-                val studioRow = StudiosTable.select {
-                    (StudiosTable.id eq studioId) and (StudiosTable.verificationStatus eq VerificationStatus.APPROVED)
-                }.singleOrNull() ?: return@transaction null
+                val studioRow = StudiosTable
+                    .select {
+                        (StudiosTable.id eq studioId) and (StudiosTable.verificationStatus eq VerificationStatus.APPROVED)
+                    }
+                    .singleOrNull()
+                    ?: return@transaction null
 
-                val rooms = RoomsTable.select { RoomsTable.studioId eq studioId }
+                val rooms = RoomsTable
+                    .select { RoomsTable.studioId eq studioId }
                     .map { it.toRoomDto() }
 
                 StudioDetailDto(
@@ -158,16 +123,6 @@ fun Route.studioRoutes() {
     }
 }
 
-private fun CreateStudioRequest.validationError(): String? {
-    if (name.isBlank()) return "Name is required"
-    if (description.isBlank()) return "Description is required"
-    if (province.isBlank()) return "Province is required"
-    if (city.isBlank()) return "City is required"
-    if (address.isBlank()) return "Address is required"
-    if (mapCoordinates.isBlank()) return "Map coordinates are required"
-    return null
-}
-
 private fun ResultRow.toStudioDto(): StudioDto = StudioDto(
     id = this[StudiosTable.id].toString(),
     ownerId = this[StudiosTable.ownerId].toString(),
@@ -178,7 +133,7 @@ private fun ResultRow.toStudioDto(): StudioDto = StudioDto(
     address = this[StudiosTable.address],
     mapCoordinates = this[StudiosTable.mapCoordinates],
     photos = this[StudiosTable.photos],
-    verificationStatus = this[StudiosTable.verificationStatus],
+    verificationStatus = this[StudiosTable.verificationStatus].name,
     createdAt = this[StudiosTable.createdAt].toString()
 )
 
@@ -204,19 +159,26 @@ data class StudioDto(
     val address: String,
     val mapCoordinates: String,
     val photos: List<String>,
-    val verificationStatus: VerificationStatus,
+    val verificationStatus: String,
     val createdAt: String
+)
+
+@Serializable
+data class RoomDto(
+    val id: String,
+    val studioId: String,
+    val name: String,
+    val description: String,
+    val hourlyPrice: Int,
+    val dailyPrice: Int,
+    val features: List<String>,
+    val images: List<String>
 )
 
 @Serializable
 data class StudioDetailDto(
     val studio: StudioDto,
     val rooms: List<RoomDto>
-)
-
-@Serializable
-data class StudiosResponse(
-    val studios: List<StudioDto>
 )
 
 @Serializable
@@ -232,3 +194,14 @@ data class CreateStudioRequest(
 
 @Serializable
 data class ErrorResponse(val message: String)
+
+private fun CreateStudioRequest.validationError(): String? {
+    if (name.isBlank()) return "name is required"
+    if (description.isBlank()) return "description is required"
+    if (province.isBlank()) return "province is required"
+    if (city.isBlank()) return "city is required"
+    if (address.isBlank()) return "address is required"
+    if (mapCoordinates.isBlank()) return "mapCoordinates is required"
+    if (photos.any { it.isBlank() }) return "photos cannot contain blank entries"
+    return null
+}
