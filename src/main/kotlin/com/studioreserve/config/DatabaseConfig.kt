@@ -1,5 +1,6 @@
 package com.studioreserve.config
 
+import com.studioreserve.admin.CommissionSettingsTable
 import com.studioreserve.auth.RefreshTokensTable
 import com.studioreserve.studios.RoomsTable
 import com.studioreserve.studios.StudiosTable
@@ -37,7 +38,13 @@ object DatabaseConfig {
     fun initDatabase() {
         Database.connect(dataSource)
         transaction {
-            SchemaUtils.create(UsersTable, StudiosTable, RoomsTable, RefreshTokensTable)
+            SchemaUtils.create(
+                UsersTable,
+                StudiosTable,
+                RoomsTable,
+                RefreshTokensTable,
+                CommissionSettingsTable,
+            )
         }
         logger.info("Database initialized and tables ensured")
     }
