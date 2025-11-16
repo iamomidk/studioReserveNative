@@ -16,8 +16,6 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.patch
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
-import java.math.BigDecimal
-import java.math.RoundingMode
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneOffset
@@ -42,6 +40,7 @@ import org.jetbrains.exposed.sql.transactions.transaction
 import org.jetbrains.exposed.sql.update
 
 private val statusService = BookingStatusService()
+private val pricingService = BookingPricingService
 
 fun Route.bookingRoutes() {
     route("/api/bookings") {
@@ -68,6 +67,7 @@ fun Route.bookingRoutes() {
                     .map { it.trim() }
                     .filter { it.isNotEmpty() }
                     .distinct()
+                    .sorted()
 
                 val startInstant = BookingTimeUtils.parseInstantOrNull(request.startTime)
                     ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("startTime must be ISO-8601"))
@@ -79,7 +79,10 @@ fun Route.bookingRoutes() {
                 }
 
                 if (BookingTimeUtils.isStartTooFarInPast(startInstant, Instant.now())) {
-                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("startTime cannot be too far in the past"))
+                    return@post call.respond(
+                        HttpStatusCode.BadRequest,
+                        ErrorResponse("startTime cannot be too far in the past")
+                    )
                 }
 
                 val roomId = request.roomId.toUuidOrNull()
@@ -103,11 +106,11 @@ fun Route.bookingRoutes() {
                         return@transaction BookingCreationResult.Conflict
                     }
 
-                    val billedHours = BookingTimeUtils.calculateBilledHours(startDateTime, endDateTime)
-                    val hourlyPrice = BigDecimal.valueOf(roomRow[RoomsTable.hourlyPrice].toLong())
-                    val totalPrice = hourlyPrice
-                        .multiply(BigDecimal.valueOf(billedHours.toLong()))
-                        .setScale(2, RoundingMode.HALF_UP)
+                    val totalPrice = pricingService.calculateHourlyTotal(
+                        hourlyPrice = roomRow[RoomsTable.hourlyPrice],
+                        start = startDateTime,
+                        end = endDateTime
+                    )
 
                     val bookingId = UUID.randomUUID()
                     val equipmentPayload = serializeEquipmentIds(normalizedEquipment)
