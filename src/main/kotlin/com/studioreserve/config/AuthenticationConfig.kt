@@ -10,7 +10,7 @@ fun Application.configureAuthentication(jwtService: JwtService = JwtService()) {
     install(Authentication) {
         jwt("auth-jwt") {
             realm = "StudioReserve"
-            verifier(jwtService.verifier())
+            verifier(jwtService.accessTokenVerifier())
             validate { credential ->
                 val userId = credential.payload.getClaim("userId").asString()
                 val role = credential.payload.getClaim("role").asString()

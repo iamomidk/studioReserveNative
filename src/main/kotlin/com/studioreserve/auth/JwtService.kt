@@ -11,6 +11,8 @@ import java.util.Date
 @Serializable
 data class JwtClaims(val userId: String, val role: String)
 
+enum class TokenType { ACCESS, REFRESH }
+
 class JwtService(
     private val clock: Clock = Clock.systemUTC()
 ) {
@@ -21,17 +23,21 @@ class JwtService(
     private val refreshExpiresMinutes = env("JWT_REFRESH_EXPIRES_MIN").toLong()
     private val algorithm = Algorithm.HMAC256(secret)
 
-    fun generateAccessToken(claims: JwtClaims): String = buildToken(claims, accessExpiresMinutes)
+    fun generateAccessToken(claims: JwtClaims): String =
+        buildToken(claims, accessExpiresMinutes, TokenType.ACCESS)
 
-    fun generateRefreshToken(claims: JwtClaims): String = buildToken(claims, refreshExpiresMinutes)
+    fun generateRefreshToken(claims: JwtClaims): String =
+        buildToken(claims, refreshExpiresMinutes, TokenType.REFRESH)
 
-    fun verifier(): JWTVerifier = JWT
-        .require(algorithm)
-        .withIssuer(issuer)
-        .withAudience(audience)
-        .build()
+    fun accessTokenVerifier(): JWTVerifier = buildVerifier(TokenType.ACCESS)
 
-    private fun buildToken(claims: JwtClaims, expiresInMinutes: Long): String {
+    fun refreshTokenVerifier(): JWTVerifier = buildVerifier(TokenType.REFRESH)
+
+    private fun buildToken(
+        claims: JwtClaims,
+        expiresInMinutes: Long,
+        tokenType: TokenType,
+    ): String {
         val now = Instant.now(clock)
         val expiresAt = Date.from(now.plusSeconds(expiresInMinutes * 60))
         return JWT.create()
@@ -40,10 +46,18 @@ class JwtService(
             .withSubject(claims.userId)
             .withClaim("userId", claims.userId)
             .withClaim("role", claims.role)
+            .withClaim("tokenType", tokenType.name)
             .withExpiresAt(expiresAt)
             .withIssuedAt(Date.from(now))
             .sign(algorithm)
     }
+
+    private fun buildVerifier(tokenType: TokenType): JWTVerifier = JWT
+        .require(algorithm)
+        .withIssuer(issuer)
+        .withAudience(audience)
+        .withClaim("tokenType", tokenType.name)
+        .build()
 
     companion object {
         private fun env(key: String): String = System.getenv(key)
