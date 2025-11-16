@@ -14,4 +14,6 @@ fun Route.adminRoutes() {
     }
 
     adminStudioRoutes()
+    adminMonitoringRoutes()
+    adminSettingsRoutes()
 }
