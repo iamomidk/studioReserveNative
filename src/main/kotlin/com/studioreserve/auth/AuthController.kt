@@ -41,6 +41,8 @@ class AuthController(
         val passwordHash = passwordHasher.hash(request.password)
         val now = LocalDateTime.now(ZoneOffset.UTC)
 
+        val assignedRole = UserRole.PHOTOGRAPHER
+
         transaction {
             UsersTable.insert { statement ->
                 statement[UsersTable.id] = userId
@@ -48,13 +50,13 @@ class AuthController(
                 statement[UsersTable.phoneNumber] = phone
                 statement[UsersTable.email] = normalizedEmail
                 statement[UsersTable.passwordHash] = passwordHash
-                statement[UsersTable.role] = request.role
+                statement[UsersTable.role] = assignedRole
                 statement[UsersTable.avatarUrl] = null
                 statement[UsersTable.createdAt] = now
             }
         }
 
-        return issueTokens(userId, request.role)
+        return issueTokens(userId, assignedRole)
     }
 
     fun login(request: LoginRequest): AuthResponse {
