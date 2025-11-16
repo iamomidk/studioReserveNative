@@ -32,6 +32,13 @@ class BookingStatusService {
         }
     }
 
+    fun canTransition(
+        role: UserRole,
+        requesterId: UUID,
+        context: BookingStatusContext,
+        targetStatus: BookingStatus
+    ): Boolean = evaluate(role, requesterId, context, targetStatus) is BookingStatusDecision.Allowed
+
     private fun evaluatePhotographerDecision(
         requesterId: UUID,
         context: BookingStatusContext,
