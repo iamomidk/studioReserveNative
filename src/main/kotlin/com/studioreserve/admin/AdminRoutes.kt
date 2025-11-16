@@ -12,4 +12,6 @@ fun Route.adminRoutes() {
             call.respond(mapOf("module" to "admin", "status" to "healthy"))
         }
     }
+
+    adminStudioRoutes()
 }
