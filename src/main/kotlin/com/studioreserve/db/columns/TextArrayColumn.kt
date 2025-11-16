@@ -34,10 +34,16 @@ class TextArrayColumnType : ColumnType<List<String>>() {
         return connection?.createArrayOf("text", value.toTypedArray()) ?: value.toTypedArray()
     }
 
-    override fun nonNullValueToString(value: List<String>): String =
-        value.joinToString(prefix = "{", postfix = "}") { entry ->
-            "\"" + entry.replace("\"", "\\\"") + "\""
+    override fun nonNullValueToString(value: List<String>): String {
+        val arrayLiteral = value.joinToString(prefix = "{", postfix = "}") { entry ->
+            val escapedEntry = entry
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+            "\"$escapedEntry\""
         }
+        val escapedLiteral = arrayLiteral.replace("'", "''")
+        return "'" + escapedLiteral + "'::text[]"
+    }
 
     private fun parsePgArrayString(value: String): List<String> {
         if (value.length <= 2) return emptyList()
