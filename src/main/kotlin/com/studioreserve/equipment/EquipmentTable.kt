@@ -12,7 +12,7 @@ object EquipmentTable : Table("equipment") {
     val condition = varchar("condition", 100)
     val serialNumber = varchar("serial_number", 100)
     val barcodeCode = varchar("barcode_code", 100).uniqueIndex("uk_equipment_barcode")
-    val barcodeImageUrl = varchar("barcode_image_url", 255)
+    val barcodeImageUrl = varchar("barcode_image_url", 255).nullable()
     val status = enumerationByName("status", 50, EquipmentStatus::class)
 
     override val primaryKey = PrimaryKey(id)

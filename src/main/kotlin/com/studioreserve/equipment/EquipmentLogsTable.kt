@@ -9,7 +9,7 @@ object EquipmentLogsTable : Table("equipment_logs") {
     val userId = uuid("user_id")
     val action = enumerationByName("action", 50, EquipmentAction::class)
     val timestamp = datetime("timestamp")
-    val notes = text("notes")
+    val notes = text("notes").nullable()
 
     override val primaryKey = PrimaryKey(id)
 }
