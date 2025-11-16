@@ -1,10 +1,12 @@
 package com.studioreserve.bookings
 
 import com.studioreserve.auth.UserPrincipal
+import com.studioreserve.notifications.NotificationService
 import com.studioreserve.payments.PaymentStatus
 import com.studioreserve.studios.RoomsTable
 import com.studioreserve.studios.StudiosTable
 import com.studioreserve.users.UserRole
+import com.studioreserve.users.UsersTable
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.auth.authenticate
@@ -38,11 +40,13 @@ import org.jetbrains.exposed.sql.select
 import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.jetbrains.exposed.sql.update
+import org.slf4j.LoggerFactory
 
 private val statusService = BookingStatusService()
 private val pricingService = BookingPricingService
+private val bookingLogger = LoggerFactory.getLogger("BookingRoutes")
 
-fun Route.bookingRoutes() {
+fun Route.bookingRoutes(notificationService: NotificationService) {
     route("/api/bookings") {
         authenticate("auth-jwt") {
             post {
@@ -258,7 +262,11 @@ fun Route.bookingRoutes() {
                             }
 
                             val refreshed = BookingsTable.select { BookingsTable.id eq bookingId }.single()
-                            BookingStatusUpdateResult.Success(refreshed.toBookingDto())
+                            val phoneNumber = UsersTable
+                                .select { UsersTable.id eq refreshed[BookingsTable.photographerId] }
+                                .singleOrNull()
+                                ?.get(UsersTable.phoneNumber)
+                            BookingStatusUpdateResult.Success(refreshed.toBookingDto(), phoneNumber)
                         }
                         BookingStatusDecision.Forbidden -> BookingStatusUpdateResult.Forbidden
                         BookingStatusDecision.InvalidTransition -> BookingStatusUpdateResult.InvalidTransition
@@ -275,7 +283,30 @@ fun Route.bookingRoutes() {
                         ErrorResponse("Invalid status transition")
                     )
                     BookingStatusUpdateResult.NotFound -> call.respond(HttpStatusCode.NotFound, ErrorResponse("Booking not found"))
-                    is BookingStatusUpdateResult.Success -> call.respond(HttpStatusCode.OK, updateResult.booking)
+                    is BookingStatusUpdateResult.Success -> {
+                        call.respond(HttpStatusCode.OK, updateResult.booking)
+                        val phoneNumber = updateResult.phoneNumber
+                        if (phoneNumber == null) {
+                            bookingLogger.warn(
+                                "Skipping booking status SMS for booking {} because photographer phone number was not found",
+                                updateResult.booking.id
+                            )
+                        } else {
+                            try {
+                                notificationService.sendBookingStatusSms(
+                                    phoneNumber = phoneNumber,
+                                    bookingId = updateResult.booking.id,
+                                    status = updateResult.booking.bookingStatus
+                                )
+                            } catch (t: Throwable) {
+                                bookingLogger.error(
+                                    "Failed to send booking status SMS for booking {}",
+                                    updateResult.booking.id,
+                                    t
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -318,5 +349,5 @@ private sealed interface BookingStatusUpdateResult {
     data object Forbidden : BookingStatusUpdateResult
     data object InvalidTransition : BookingStatusUpdateResult
     data object NotFound : BookingStatusUpdateResult
-    data class Success(val booking: BookingDto) : BookingStatusUpdateResult
+    data class Success(val booking: BookingDto, val phoneNumber: String?) : BookingStatusUpdateResult
 }

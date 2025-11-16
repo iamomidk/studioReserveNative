@@ -2,7 +2,9 @@ package com.studioreserve.payments
 
 import com.studioreserve.auth.UserPrincipal
 import com.studioreserve.bookings.BookingsTable
+import com.studioreserve.notifications.NotificationService
 import com.studioreserve.users.UserRole
+import com.studioreserve.users.UsersTable
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.call
 import io.ktor.server.auth.authenticate
@@ -24,8 +26,14 @@ import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.select
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.jetbrains.exposed.sql.update
+import org.slf4j.LoggerFactory
 
-fun Route.paymentRoutes(paymentGatewayService: PaymentGatewayService = FakeZarinpalPaymentGatewayService()) {
+private val paymentLogger = LoggerFactory.getLogger("PaymentRoutes")
+
+fun Route.paymentRoutes(
+    paymentGatewayService: PaymentGatewayService,
+    notificationService: NotificationService
+) {
     route("/api/payments") {
         authenticate("auth-jwt") {
             post("/initiate") {
@@ -146,6 +154,7 @@ fun Route.paymentRoutes(paymentGatewayService: PaymentGatewayService = FakeZarin
 
                 val paymentId = paymentRow[PaymentsTable.id]
                 val bookingId = paymentRow[PaymentsTable.bookingId]
+                val bookingRow = BookingsTable.select { BookingsTable.id eq bookingId }.single()
                 val now = LocalDateTime.now()
 
                 if (verification.success) {
@@ -158,7 +167,12 @@ fun Route.paymentRoutes(paymentGatewayService: PaymentGatewayService = FakeZarin
                         statement[BookingsTable.paymentStatus] = PaymentStatus.PAID
                     }
 
-                    PaymentCallbackDbResult.Success
+                    val phoneNumber = UsersTable
+                        .select { UsersTable.id eq bookingRow[BookingsTable.photographerId] }
+                        .singleOrNull()
+                        ?.get(UsersTable.phoneNumber)
+
+                    PaymentCallbackDbResult.Success(bookingId, phoneNumber)
                 } else {
                     PaymentsTable.update({ PaymentsTable.id eq paymentId }) { statement ->
                         statement[status] = PaymentStatus.FAILED
@@ -177,10 +191,33 @@ fun Route.paymentRoutes(paymentGatewayService: PaymentGatewayService = FakeZarin
                     PaymentCallbackResponse(success = false, message = "Payment record not found")
                 )
 
-                PaymentCallbackDbResult.Success -> call.respond(
-                    HttpStatusCode.OK,
-                    PaymentCallbackResponse(success = true, message = "Payment verified successfully")
-                )
+                is PaymentCallbackDbResult.Success -> {
+                    call.respond(
+                        HttpStatusCode.OK,
+                        PaymentCallbackResponse(success = true, message = "Payment verified successfully")
+                    )
+
+                    val phoneNumber = callbackResult.phoneNumber
+                    if (phoneNumber == null) {
+                        paymentLogger.warn(
+                            "Skipping payment success SMS for booking {} because photographer phone number was not found",
+                            callbackResult.bookingId
+                        )
+                    } else {
+                        try {
+                            notificationService.sendPaymentSuccessSms(
+                                phoneNumber = phoneNumber,
+                                bookingId = callbackResult.bookingId.toString()
+                            )
+                        } catch (t: Throwable) {
+                            paymentLogger.error(
+                                "Failed to send payment success SMS for booking {}",
+                                callbackResult.bookingId,
+                                t
+                            )
+                        }
+                    }
+                }
 
                 PaymentCallbackDbResult.Failure -> call.respond(
                     HttpStatusCode.OK,
@@ -202,10 +239,10 @@ private sealed interface PaymentInitiationDbResult {
     data object InvalidStatus : PaymentInitiationDbResult
 }
 
-private enum class PaymentCallbackDbResult {
-    Success,
-    Failure,
-    NotFound
+private sealed interface PaymentCallbackDbResult {
+    data class Success(val bookingId: UUID, val phoneNumber: String?) : PaymentCallbackDbResult
+    data object Failure : PaymentCallbackDbResult
+    data object NotFound : PaymentCallbackDbResult
 }
 
 private fun ResultRow.toPaymentDto(): PaymentDto = PaymentDto(
