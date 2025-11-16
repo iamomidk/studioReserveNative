@@ -11,20 +11,18 @@ import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
+import io.ktor.server.routing.patch
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
-import java.math.BigDecimal
-import java.time.LocalDateTime
-import java.time.ZoneOffset
 import java.util.UUID
 import kotlinx.serialization.Serializable
-import org.jetbrains.exposed.sql.ResultRow
 import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
-import org.jetbrains.exposed.sql.insert
 import org.jetbrains.exposed.sql.select
+import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
-import org.jetbrains.exposed.sql.update
+
+private val equipmentService = EquipmentService()
 
 fun Route.equipmentRoutes() {
     authenticate("auth-jwt") {
@@ -54,40 +52,13 @@ fun Route.equipmentRoutes() {
                 val studioId = request.studioId.toUuidOrNull()
                     ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("studioId must be a valid UUID"))
 
-                val creationResult = transaction {
-                    val studioRow = StudiosTable.select { StudiosTable.id eq studioId }.singleOrNull()
-                        ?: return@transaction EquipmentCreateResult.StudioNotFound
-
-                    if (studioRow[StudiosTable.ownerId] != ownerId) {
-                        return@transaction EquipmentCreateResult.Forbidden
-                    }
-
-                    val equipmentId = UUID.randomUUID()
-                    val barcodeCode = UUID.randomUUID().toString()
-
-                    EquipmentTable.insert { statement ->
-                        statement[EquipmentTable.id] = equipmentId
-                        statement[EquipmentTable.studioId] = studioId
-                        statement[EquipmentTable.name] = request.name.trim()
-                        statement[EquipmentTable.brand] = request.brand.trim()
-                        statement[EquipmentTable.type] = request.type.trim()
-                        statement[EquipmentTable.rentalPrice] = request.rentalPrice.toBigDecimalWithScale()
-                        statement[EquipmentTable.condition] = request.condition.trim()
-                        statement[EquipmentTable.serialNumber] = request.serialNumber.trim()
-                        statement[EquipmentTable.status] = EquipmentStatus.AVAILABLE
-                        statement[EquipmentTable.barcodeCode] = barcodeCode
-                        statement[EquipmentTable.barcodeImageUrl] = null
-                    }
-
-                    val equipmentRow = EquipmentTable.select { EquipmentTable.id eq equipmentId }.single()
-                    EquipmentCreateResult.Success(equipmentRow.toEquipmentDto())
-                }
-
-                when (creationResult) {
+                when (val creationResult = equipmentService.createEquipment(ownerId, studioId, request)) {
                     EquipmentCreateResult.StudioNotFound ->
                         call.respond(HttpStatusCode.NotFound, ErrorResponse("Studio not found"))
+
                     EquipmentCreateResult.Forbidden ->
                         call.respond(HttpStatusCode.Forbidden, ErrorResponse("You do not own this studio"))
+
                     is EquipmentCreateResult.Success ->
                         call.respond(HttpStatusCode.Created, creationResult.equipment)
                 }
@@ -100,6 +71,10 @@ fun Route.equipmentRoutes() {
                 val role = principal.toUserRole()
                     ?: return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Unknown role"))
 
+                if (role != UserRole.STUDIO_OWNER && role != UserRole.ADMIN) {
+                    return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Role not allowed to view equipment"))
+                }
+
                 val ownerId = if (role == UserRole.STUDIO_OWNER) {
                     principal.userId.toUuidOrNull()
                         ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user id"))
@@ -111,37 +86,44 @@ fun Route.equipmentRoutes() {
                     it.toUuidOrNull() ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("studioId query parameter must be a valid UUID"))
                 }
 
-                val equipment = transaction {
-                    when (role) {
-                        UserRole.STUDIO_OWNER -> {
-                            val ownerUuid = ownerId ?: return@transaction emptyList()
-                            val studioIds = StudiosTable
-                                .slice(StudiosTable.id)
-                                .select { StudiosTable.ownerId eq ownerUuid }
-                                .map { it[StudiosTable.id] }
+                val equipment = equipmentService.listEquipment(role, ownerId, studioIdFilter)
+                call.respond(HttpStatusCode.OK, equipment)
+            }
 
-                            if (studioIds.isEmpty()) {
-                                emptyList()
-                            } else {
-                                EquipmentTable
-                                    .select { EquipmentTable.studioId inList studioIds }
-                                    .map { it.toEquipmentDto() }
-                            }
-                        }
-                        UserRole.ADMIN -> {
-                            EquipmentTable.selectAll().map { it.toEquipmentDto() }
-                        }
-                        UserRole.PHOTOGRAPHER -> {
-                            if (studioIdFilter == null) emptyList() else {
-                                EquipmentTable
-                                    .select { EquipmentTable.studioId eq studioIdFilter }
-                                    .map { it.toEquipmentDto() }
-                            }
-                        }
-                    }
+            patch("/{id}") {
+                val principal = call.principal<UserPrincipal>()
+                    ?: return@patch call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Missing authentication token"))
+
+                val role = principal.toUserRole()
+                    ?: return@patch call.respond(HttpStatusCode.Forbidden, ErrorResponse("Unknown role"))
+
+                if (role != UserRole.STUDIO_OWNER && role != UserRole.ADMIN) {
+                    return@patch call.respond(HttpStatusCode.Forbidden, ErrorResponse("Role not allowed to update equipment"))
                 }
 
-                call.respond(HttpStatusCode.OK, equipment)
+                val userId = principal.userId.toUuidOrNull()
+                    ?: return@patch call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user id"))
+
+                val equipmentId = call.parameters["id"]?.toUuidOrNull()
+                    ?: return@patch call.respond(HttpStatusCode.BadRequest, ErrorResponse("id must be a valid UUID"))
+
+                val request = runCatching { call.receive<UpdateEquipmentRequest>() }.getOrElse {
+                    return@patch call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request payload"))
+                }
+
+                when (val updateResult = equipmentService.updateEquipment(userId, role, equipmentId, request)) {
+                    EquipmentUpdateResult.NotFound ->
+                        call.respond(HttpStatusCode.NotFound, ErrorResponse("Equipment not found"))
+
+                    EquipmentUpdateResult.Forbidden ->
+                        call.respond(HttpStatusCode.Forbidden, ErrorResponse("You are not allowed to modify this equipment"))
+
+                    is EquipmentUpdateResult.InvalidPayload ->
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse(updateResult.message))
+
+                    is EquipmentUpdateResult.Success ->
+                        call.respond(HttpStatusCode.OK, updateResult.equipment)
+                }
             }
         }
 
@@ -152,7 +134,7 @@ fun Route.equipmentRoutes() {
             val role = principal.toUserRole()
                 ?: return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Unknown role"))
 
-            if (role != UserRole.STUDIO_OWNER && role != UserRole.PHOTOGRAPHER) {
+            if (role != UserRole.STUDIO_OWNER && role != UserRole.ADMIN) {
                 return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Role not allowed to scan equipment"))
             }
 
@@ -167,72 +149,16 @@ fun Route.equipmentRoutes() {
                 return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("barcodeCode is required"))
             }
 
-            val scanResult = transaction {
-                val equipmentRow = EquipmentTable
-                    .select { EquipmentTable.barcodeCode eq request.barcodeCode.trim() }
-                    .singleOrNull()
-                    ?: return@transaction EquipmentScanResult.NotFound
-
-                val studioRow = StudiosTable
-                    .select { StudiosTable.id eq equipmentRow[EquipmentTable.studioId] }
-                    .single()
-
-                val isOwner = studioRow[StudiosTable.ownerId] == userId
-
-                when (request.action) {
-                    EquipmentAction.SCAN_OUT -> {
-                        if (!isOwner) return@transaction EquipmentScanResult.Forbidden
-                        if (equipmentRow[EquipmentTable.status] != EquipmentStatus.AVAILABLE) {
-                            return@transaction EquipmentScanResult.InvalidStatus
-                        }
-
-                        EquipmentTable.update({ EquipmentTable.id eq equipmentRow[EquipmentTable.id] }) {
-                            it[status] = EquipmentStatus.RENTED
-                        }
-                    }
-
-                    EquipmentAction.SCAN_IN -> {
-                        if (!isOwner) {
-                            return@transaction EquipmentScanResult.Forbidden
-                        }
-                        EquipmentTable.update({ EquipmentTable.id eq equipmentRow[EquipmentTable.id] }) {
-                            it[status] = EquipmentStatus.AVAILABLE
-                        }
-                    }
-                }
-
-                val updatedRow = EquipmentTable.select { EquipmentTable.id eq equipmentRow[EquipmentTable.id] }.single()
-
-                val logId = UUID.randomUUID()
-                val timestamp = LocalDateTime.now(ZoneOffset.UTC)
-                EquipmentLogsTable.insert { statement ->
-                    statement[EquipmentLogsTable.id] = logId
-                    statement[EquipmentLogsTable.equipmentId] = updatedRow[EquipmentTable.id]
-                    statement[EquipmentLogsTable.userId] = userId
-                    statement[EquipmentLogsTable.action] = request.action
-                    statement[EquipmentLogsTable.timestamp] = timestamp
-                    statement[EquipmentLogsTable.notes] = request.notes?.takeIf { it.isNotBlank() }
-                }
-
-                val logDto = EquipmentLogDto(
-                    id = logId.toString(),
-                    equipmentId = updatedRow[EquipmentTable.id].toString(),
-                    userId = userId.toString(),
-                    action = request.action,
-                    timestamp = timestamp.toString(),
-                    notes = request.notes?.takeIf { it.isNotBlank() }
-                )
-
-                EquipmentScanResult.Success(updatedRow.toEquipmentDto(), logDto)
-            }
-
-            when (scanResult) {
+            when (val scanResult = equipmentService.scanEquipment(userId, role, request)) {
                 EquipmentScanResult.NotFound ->
                     call.respond(HttpStatusCode.NotFound, ErrorResponse("Equipment not found for barcode"))
+
                 EquipmentScanResult.Forbidden ->
                     call.respond(HttpStatusCode.Forbidden, ErrorResponse("You are not allowed to perform this action"))
+
                 EquipmentScanResult.InvalidStatus ->
-                    call.respond(HttpStatusCode.Conflict, ErrorResponse("Equipment cannot be scanned out in its current status"))
+                    call.respond(HttpStatusCode.Conflict, ErrorResponse("Equipment cannot transition to the requested status"))
+
                 is EquipmentScanResult.Success ->
                     call.respond(HttpStatusCode.OK, EquipmentScanResponse(scanResult.equipment, scanResult.log))
             }
@@ -298,29 +224,6 @@ fun Route.equipmentRoutes() {
     }
 }
 
-private fun ResultRow.toEquipmentDto(): EquipmentDto = EquipmentDto(
-    id = this[EquipmentTable.id].toString(),
-    studioId = this[EquipmentTable.studioId].toString(),
-    name = this[EquipmentTable.name],
-    brand = this[EquipmentTable.brand],
-    type = this[EquipmentTable.type],
-    rentalPrice = this[EquipmentTable.rentalPrice].toInt(),
-    condition = this[EquipmentTable.condition],
-    serialNumber = this[EquipmentTable.serialNumber],
-    status = this[EquipmentTable.status],
-    barcodeCode = this[EquipmentTable.barcodeCode],
-    barcodeImageUrl = this[EquipmentTable.barcodeImageUrl]
-)
-
-private fun ResultRow.toEquipmentLogDto(): EquipmentLogDto = EquipmentLogDto(
-    id = this[EquipmentLogsTable.id].toString(),
-    equipmentId = this[EquipmentLogsTable.equipmentId].toString(),
-    userId = this[EquipmentLogsTable.userId].toString(),
-    action = this[EquipmentLogsTable.action],
-    timestamp = this[EquipmentLogsTable.timestamp].toString(),
-    notes = this[EquipmentLogsTable.notes]
-)
-
 private fun CreateEquipmentRequest.validationError(): String? {
     if (studioId.isBlank()) return "studioId is required"
     if (name.isBlank()) return "name is required"
@@ -335,8 +238,6 @@ private fun CreateEquipmentRequest.validationError(): String? {
 private fun UserPrincipal.toUserRole(): UserRole? = runCatching { UserRole.valueOf(role) }.getOrNull()
 
 private fun String.toUuidOrNull(): UUID? = runCatching { UUID.fromString(this) }.getOrNull()
-
-private fun Int.toBigDecimalWithScale(): BigDecimal = BigDecimal(this).setScale(2)
 
 @Serializable
 private data class ErrorResponse(val message: String)
@@ -390,15 +291,14 @@ data class EquipmentScanResponse(
     val log: EquipmentLogDto
 )
 
-private sealed interface EquipmentCreateResult {
-    data object StudioNotFound : EquipmentCreateResult
-    data object Forbidden : EquipmentCreateResult
-    data class Success(val equipment: EquipmentDto) : EquipmentCreateResult
-}
-
-private sealed interface EquipmentScanResult {
-    data object NotFound : EquipmentScanResult
-    data object Forbidden : EquipmentScanResult
-    data object InvalidStatus : EquipmentScanResult
-    data class Success(val equipment: EquipmentDto, val log: EquipmentLogDto) : EquipmentScanResult
-}
+@Serializable
+data class UpdateEquipmentRequest(
+    val name: String? = null,
+    val brand: String? = null,
+    val type: String? = null,
+    val rentalPrice: Int? = null,
+    val condition: String? = null,
+    val serialNumber: String? = null,
+    val status: EquipmentStatus? = null,
+    val barcodeImageUrl: String? = null
+)
