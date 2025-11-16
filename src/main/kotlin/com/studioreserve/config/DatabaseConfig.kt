@@ -2,9 +2,11 @@ package com.studioreserve.config
 
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
+import com.studioreserve.studios.RoomsTable
+import com.studioreserve.studios.StudiosTable
+import com.studioreserve.users.UsersTable
 import org.jetbrains.exposed.sql.Database
 import org.jetbrains.exposed.sql.SchemaUtils
-import org.jetbrains.exposed.sql.Table
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.slf4j.LoggerFactory
 
@@ -34,24 +36,8 @@ object DatabaseConfig {
     fun initDatabase() {
         Database.connect(dataSource)
         transaction {
-            SchemaUtils.create(UsersTable, StudiosTable)
+            SchemaUtils.create(UsersTable, StudiosTable, RoomsTable)
         }
         logger.info("Database initialized and tables ensured")
     }
-}
-
-object UsersTable : Table("users") {
-    val id = integer("id").autoIncrement()
-    val email = varchar("email", length = 255).uniqueIndex()
-    val displayName = varchar("display_name", length = 255).nullable()
-
-    override val primaryKey = PrimaryKey(id)
-}
-
-object StudiosTable : Table("studios") {
-    val id = integer("id").autoIncrement()
-    val name = varchar("name", length = 255)
-    val location = varchar("location", length = 255).nullable()
-
-    override val primaryKey = PrimaryKey(id)
 }
