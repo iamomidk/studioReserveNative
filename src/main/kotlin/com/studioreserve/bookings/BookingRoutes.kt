@@ -18,18 +18,13 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import java.math.BigDecimal
 import java.math.RoundingMode
-import java.time.Duration
 import java.time.Instant
 import java.time.LocalDateTime
 import java.time.ZoneOffset
-import java.time.format.DateTimeParseException
 import java.util.UUID
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.decodeFromString
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
+import org.jetbrains.exposed.sql.FieldSet
 import org.jetbrains.exposed.sql.JoinType
-import org.jetbrains.exposed.sql.ResultRow
+import org.jetbrains.exposed.sql.Query
 import org.jetbrains.exposed.sql.SortOrder
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.greater
@@ -46,7 +41,7 @@ import org.jetbrains.exposed.sql.selectAll
 import org.jetbrains.exposed.sql.transactions.transaction
 import org.jetbrains.exposed.sql.update
 
-private const val PAST_THRESHOLD_MINUTES = 10L
+private val statusService = BookingStatusService()
 
 fun Route.bookingRoutes() {
     route("/api/bookings") {
@@ -62,35 +57,36 @@ fun Route.bookingRoutes() {
                     return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("Only photographers can create bookings"))
                 }
 
-                val photographerId = runCatching { UUID.fromString(principal.userId) }.getOrElse {
-                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user id"))
-                }
+                val photographerId = principal.userId.toUuidOrNull()
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user id"))
 
                 val request = runCatching { call.receive<CreateBookingRequest>() }.getOrElse {
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request payload"))
                 }
 
-                val normalizedEquipment = request.equipmentIds.distinct()
-                val startInstant = request.startTime.parseInstantOrNull()
+                val normalizedEquipment = request.equipmentIds
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .distinct()
+
+                val startInstant = BookingTimeUtils.parseInstantOrNull(request.startTime)
                     ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("startTime must be ISO-8601"))
-                val endInstant = request.endTime.parseInstantOrNull()
+                val endInstant = BookingTimeUtils.parseInstantOrNull(request.endTime)
                     ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("endTime must be ISO-8601"))
 
-                if (!startInstant.isBefore(endInstant)) {
+                if (!BookingTimeUtils.isChronologicallyValid(startInstant, endInstant)) {
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("startTime must be before endTime"))
                 }
 
-                val now = Instant.now()
-                if (startInstant.isBefore(now.minus(Duration.ofMinutes(PAST_THRESHOLD_MINUTES)))) {
+                if (BookingTimeUtils.isStartTooFarInPast(startInstant, Instant.now())) {
                     return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("startTime cannot be too far in the past"))
                 }
 
-                val roomId = runCatching { UUID.fromString(request.roomId) }.getOrElse {
-                    return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("roomId must be a valid UUID"))
-                }
+                val roomId = request.roomId.toUuidOrNull()
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("roomId must be a valid UUID"))
 
-                val startDateTime = LocalDateTime.ofInstant(startInstant, ZoneOffset.UTC)
-                val endDateTime = LocalDateTime.ofInstant(endInstant, ZoneOffset.UTC)
+                val startDateTime = BookingTimeUtils.toUtcLocalDateTime(startInstant)
+                val endDateTime = BookingTimeUtils.toUtcLocalDateTime(endInstant)
 
                 val creationResult = transaction {
                     val roomRow = RoomsTable.select { RoomsTable.id eq roomId }.singleOrNull()
@@ -107,15 +103,14 @@ fun Route.bookingRoutes() {
                         return@transaction BookingCreationResult.Conflict
                     }
 
-                    val durationMinutes = Duration.between(startDateTime, endDateTime).toMinutes()
-                    val billedHours = ((durationMinutes + 59) / 60).coerceAtLeast(1)
-                    val hourlyPrice = roomRow[RoomsTable.hourlyPrice]
-                    val totalPrice = BigDecimal.valueOf(hourlyPrice.toLong())
+                    val billedHours = BookingTimeUtils.calculateBilledHours(startDateTime, endDateTime)
+                    val hourlyPrice = BigDecimal.valueOf(roomRow[RoomsTable.hourlyPrice].toLong())
+                    val totalPrice = hourlyPrice
                         .multiply(BigDecimal.valueOf(billedHours.toLong()))
                         .setScale(2, RoundingMode.HALF_UP)
 
                     val bookingId = UUID.randomUUID()
-                    val equipmentPayload = json.encodeToString(normalizedEquipment)
+                    val equipmentPayload = serializeEquipmentIds(normalizedEquipment)
 
                     BookingsTable.insert { statement ->
                         statement[BookingsTable.id] = bookingId
@@ -135,7 +130,10 @@ fun Route.bookingRoutes() {
                 }
 
                 when (creationResult) {
-                    BookingCreationResult.Conflict -> call.respond(HttpStatusCode.Conflict, ErrorResponse("Room is already booked for the selected time range"))
+                    BookingCreationResult.Conflict -> call.respond(
+                        HttpStatusCode.Conflict,
+                        ErrorResponse("Room is already booked for the selected time range")
+                    )
                     BookingCreationResult.RoomNotFound -> call.respond(HttpStatusCode.NotFound, ErrorResponse("Room not found"))
                     is BookingCreationResult.Success -> call.respond(HttpStatusCode.Created, creationResult.booking)
                 }
@@ -148,44 +146,29 @@ fun Route.bookingRoutes() {
                 val role = runCatching { UserRole.valueOf(principal.role) }.getOrNull()
                     ?: return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Unknown role"))
 
-                val userId = runCatching { UUID.fromString(principal.userId) }.getOrElse {
-                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user id"))
-                }
+                val userId = principal.userId.toUuidOrNull()
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user id"))
 
-                val statusFilter = call.request.queryParameters["status"]?.let { statusValue ->
-                    runCatching { BookingStatus.valueOf(statusValue.uppercase()) }.getOrElse {
+                val statusFilter = call.request.queryParameters["status"]?.let { rawStatus ->
+                    runCatching { BookingStatus.valueOf(rawStatus.uppercase()) }.getOrElse {
                         return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid status value"))
                     }
                 }
 
-                val fromDateParam = call.request.queryParameters["fromDate"]
-                val fromDate = fromDateParam?.parseInstantOrNull()?.let { LocalDateTime.ofInstant(it, ZoneOffset.UTC) }
-                    ?: fromDateParam?.let {
-                        return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("fromDate must be ISO-8601"))
-                    }
-
-                val toDateParam = call.request.queryParameters["toDate"]
-                val toDate = toDateParam?.parseInstantOrNull()?.let { LocalDateTime.ofInstant(it, ZoneOffset.UTC) }
-                    ?: toDateParam?.let {
-                        return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("toDate must be ISO-8601"))
-                    }
+                val fromDate = parseQueryDateTime(call.request.queryParameters["fromDate"], "fromDate") { message ->
+                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse(message))
+                }
+                val toDate = parseQueryDateTime(call.request.queryParameters["toDate"], "toDate") { message ->
+                    return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse(message))
+                }
 
                 if (fromDate != null && toDate != null && fromDate.isAfter(toDate)) {
                     return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("fromDate cannot be after toDate"))
                 }
 
                 val bookings = transaction {
-                    val query = BookingsTable
-                        .join(RoomsTable, JoinType.INNER, additionalConstraint = { BookingsTable.roomId eq RoomsTable.id })
-                        .join(StudiosTable, JoinType.INNER, additionalConstraint = { RoomsTable.studioId eq StudiosTable.id })
-                        .slice(BookingsTable.columns)
-                        .selectAll()
-
-                    when (role) {
-                        UserRole.PHOTOGRAPHER -> query.andWhere { BookingsTable.photographerId eq userId }
-                        UserRole.STUDIO_OWNER -> query.andWhere { StudiosTable.ownerId eq userId }
-                        UserRole.ADMIN -> Unit
-                    }
+                    val query = bookingsFieldSet().selectAll()
+                    query.applyVisibilityFilter(role, userId)
 
                     statusFilter?.let { status ->
                         query.andWhere { BookingsTable.bookingStatus eq status }
@@ -205,6 +188,34 @@ fun Route.bookingRoutes() {
                 call.respond(HttpStatusCode.OK, bookings)
             }
 
+            get("/{id}") {
+                val principal = call.principal<UserPrincipal>()
+                    ?: return@get call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Missing authentication token"))
+
+                val role = runCatching { UserRole.valueOf(principal.role) }.getOrNull()
+                    ?: return@get call.respond(HttpStatusCode.Forbidden, ErrorResponse("Unknown role"))
+
+                val userId = principal.userId.toUuidOrNull()
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user id"))
+
+                val bookingIdParam = call.parameters["id"]
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Booking id is required"))
+                val bookingId = bookingIdParam.toUuidOrNull()
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid booking id"))
+
+                val booking = transaction {
+                    val query = bookingsFieldSet().select { BookingsTable.id eq bookingId }
+                    query.applyVisibilityFilter(role, userId)
+                    query.singleOrNull()?.toBookingDto()
+                }
+
+                if (booking == null) {
+                    call.respond(HttpStatusCode.NotFound, ErrorResponse("Booking not found"))
+                } else {
+                    call.respond(HttpStatusCode.OK, booking)
+                }
+            }
+
             patch("/{id}/status") {
                 val principal = call.principal<UserPrincipal>()
                     ?: return@patch call.respond(HttpStatusCode.Unauthorized, ErrorResponse("Missing authentication token"))
@@ -212,115 +223,87 @@ fun Route.bookingRoutes() {
                 val role = runCatching { UserRole.valueOf(principal.role) }.getOrNull()
                     ?: return@patch call.respond(HttpStatusCode.Forbidden, ErrorResponse("Unknown role"))
 
-                if (role != UserRole.STUDIO_OWNER && role != UserRole.ADMIN) {
-                    return@patch call.respond(HttpStatusCode.Forbidden, ErrorResponse("You are not allowed to update booking status"))
-                }
-
-                val userId = runCatching { UUID.fromString(principal.userId) }.getOrElse {
-                    return@patch call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user id"))
-                }
+                val userId = principal.userId.toUuidOrNull()
+                    ?: return@patch call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid user id"))
 
                 val bookingIdParam = call.parameters["id"]
                     ?: return@patch call.respond(HttpStatusCode.BadRequest, ErrorResponse("Booking id is required"))
-                val bookingId = runCatching { UUID.fromString(bookingIdParam) }.getOrElse {
-                    return@patch call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid booking id"))
-                }
+                val bookingId = bookingIdParam.toUuidOrNull()
+                    ?: return@patch call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid booking id"))
 
                 val request = runCatching { call.receive<UpdateBookingStatusRequest>() }.getOrElse {
                     return@patch call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid request payload"))
                 }
 
-                if (request.status == BookingStatus.PENDING) {
-                    return@patch call.respond(HttpStatusCode.BadRequest, ErrorResponse("Cannot revert a booking to PENDING"))
-                }
-
                 val updateResult = transaction {
-                    val bookingWithOwnership = BookingsTable
-                        .join(RoomsTable, JoinType.INNER, additionalConstraint = { BookingsTable.roomId eq RoomsTable.id })
-                        .join(StudiosTable, JoinType.INNER, additionalConstraint = { RoomsTable.studioId eq StudiosTable.id })
+                    val bookingRow = bookingsFieldSet()
                         .select { BookingsTable.id eq bookingId }
-                        .singleOrNull() ?: return@transaction BookingUpdateResult.NotFound
+                        .singleOrNull()
+                        ?: return@transaction BookingStatusUpdateResult.NotFound
 
-                    if (role == UserRole.STUDIO_OWNER && bookingWithOwnership[StudiosTable.ownerId] != userId) {
-                        return@transaction BookingUpdateResult.Forbidden
+                    val context = BookingStatusContext(
+                        bookingId = bookingRow[BookingsTable.id],
+                        currentStatus = bookingRow[BookingsTable.bookingStatus],
+                        photographerId = bookingRow[BookingsTable.photographerId],
+                        studioOwnerId = bookingRow[StudiosTable.ownerId]
+                    )
+
+                    when (statusService.evaluate(role, userId, context, request.status)) {
+                        BookingStatusDecision.Allowed -> {
+                            BookingsTable.update({ BookingsTable.id eq bookingId }) { statement ->
+                                statement[bookingStatus] = request.status
+                            }
+
+                            val refreshed = BookingsTable.select { BookingsTable.id eq bookingId }.single()
+                            BookingStatusUpdateResult.Success(refreshed.toBookingDto())
+                        }
+                        BookingStatusDecision.Forbidden -> BookingStatusUpdateResult.Forbidden
+                        BookingStatusDecision.InvalidTransition -> BookingStatusUpdateResult.InvalidTransition
                     }
-
-                    val currentStatus = bookingWithOwnership[BookingsTable.bookingStatus]
-                    if (!isValidTransition(currentStatus, request.status)) {
-                        return@transaction BookingUpdateResult.InvalidTransition
-                    }
-
-                    BookingsTable.update({ BookingsTable.id eq bookingId }) { statement ->
-                        statement[bookingStatus] = request.status
-                    }
-
-                    val refreshed = BookingsTable.select { BookingsTable.id eq bookingId }.single()
-                    BookingUpdateResult.Success(refreshed.toBookingDto())
                 }
 
                 when (updateResult) {
-                    BookingUpdateResult.Forbidden -> call.respond(HttpStatusCode.Forbidden, ErrorResponse("You do not own this booking"))
-                    BookingUpdateResult.InvalidTransition -> call.respond(HttpStatusCode.BadRequest, ErrorResponse("Invalid status transition"))
-                    BookingUpdateResult.NotFound -> call.respond(HttpStatusCode.NotFound, ErrorResponse("Booking not found"))
-                    is BookingUpdateResult.Success -> call.respond(HttpStatusCode.OK, updateResult.booking)
+                    BookingStatusUpdateResult.Forbidden -> call.respond(
+                        HttpStatusCode.Forbidden,
+                        ErrorResponse("You are not allowed to update this booking")
+                    )
+                    BookingStatusUpdateResult.InvalidTransition -> call.respond(
+                        HttpStatusCode.BadRequest,
+                        ErrorResponse("Invalid status transition")
+                    )
+                    BookingStatusUpdateResult.NotFound -> call.respond(HttpStatusCode.NotFound, ErrorResponse("Booking not found"))
+                    is BookingStatusUpdateResult.Success -> call.respond(HttpStatusCode.OK, updateResult.booking)
                 }
             }
         }
     }
 }
 
-@Serializable
-data class CreateBookingRequest(
-    val roomId: String,
-    val startTime: String,
-    val endTime: String,
-    val equipmentIds: List<String> = emptyList()
-)
-
-@Serializable
-data class BookingDto(
-    val id: String,
-    val roomId: String,
-    val photographerId: String,
-    val startTime: String,
-    val endTime: String,
-    val equipmentIds: List<String>,
-    val totalPrice: Double,
-    val paymentStatus: PaymentStatus,
-    val bookingStatus: BookingStatus,
-    val createdAt: String
-)
-
-@Serializable
-data class UpdateBookingStatusRequest(val status: BookingStatus)
-
-@Serializable
-data class ErrorResponse(val message: String)
-
-private fun ResultRow.toBookingDto(): BookingDto = BookingDto(
-    id = this[BookingsTable.id].toString(),
-    roomId = this[BookingsTable.roomId].toString(),
-    photographerId = this[BookingsTable.photographerId].toString(),
-    startTime = this[BookingsTable.startTime].toInstantString(),
-    endTime = this[BookingsTable.endTime].toInstantString(),
-    equipmentIds = parseEquipmentIds(this[BookingsTable.equipmentIds]),
-    totalPrice = this[BookingsTable.totalPrice].toDouble(),
-    paymentStatus = this[BookingsTable.paymentStatus],
-    bookingStatus = this[BookingsTable.bookingStatus],
-    createdAt = this[BookingsTable.createdAt].toInstantString()
-)
-
-private fun LocalDateTime.toInstantString(): String = this.atOffset(ZoneOffset.UTC).toInstant().toString()
-
-private fun String.parseInstantOrNull(): Instant? = try {
-    Instant.parse(this)
-} catch (_: DateTimeParseException) {
-    null
+private fun parseQueryDateTime(
+    value: String?,
+    fieldName: String,
+    onError: (String) -> Nothing
+): LocalDateTime? {
+    value ?: return null
+    val instant = BookingTimeUtils.parseInstantOrNull(value)
+        ?: onError("$fieldName must be ISO-8601")
+    return BookingTimeUtils.toUtcLocalDateTime(instant)
 }
 
-private fun parseEquipmentIds(raw: String): List<String> = runCatching {
-    json.decodeFromString<List<String>>(raw)
-}.getOrDefault(emptyList())
+private fun String.toUuidOrNull(): UUID? = runCatching { UUID.fromString(this) }.getOrNull()
+
+private fun bookingsFieldSet(): FieldSet = BookingsTable
+    .join(RoomsTable, JoinType.INNER, additionalConstraint = { BookingsTable.roomId eq RoomsTable.id })
+    .join(StudiosTable, JoinType.INNER, additionalConstraint = { RoomsTable.studioId eq StudiosTable.id })
+    .slice(BookingsTable.columns + listOf(StudiosTable.ownerId))
+
+private fun Query.applyVisibilityFilter(role: UserRole, userId: UUID) {
+    when (role) {
+        UserRole.PHOTOGRAPHER -> andWhere { BookingsTable.photographerId eq userId }
+        UserRole.STUDIO_OWNER -> andWhere { StudiosTable.ownerId eq userId }
+        UserRole.ADMIN -> Unit
+    }
+}
 
 private sealed interface BookingCreationResult {
     data object Conflict : BookingCreationResult
@@ -328,19 +311,9 @@ private sealed interface BookingCreationResult {
     data class Success(val booking: BookingDto) : BookingCreationResult
 }
 
-private sealed interface BookingUpdateResult {
-    data object Forbidden : BookingUpdateResult
-    data object InvalidTransition : BookingUpdateResult
-    data object NotFound : BookingUpdateResult
-    data class Success(val booking: BookingDto) : BookingUpdateResult
+private sealed interface BookingStatusUpdateResult {
+    data object Forbidden : BookingStatusUpdateResult
+    data object InvalidTransition : BookingStatusUpdateResult
+    data object NotFound : BookingStatusUpdateResult
+    data class Success(val booking: BookingDto) : BookingStatusUpdateResult
 }
-
-private fun isValidTransition(current: BookingStatus, target: BookingStatus): Boolean = when (current) {
-    BookingStatus.PENDING -> target in setOf(BookingStatus.ACCEPTED, BookingStatus.REJECTED, BookingStatus.CANCELLED)
-    BookingStatus.ACCEPTED -> target in setOf(BookingStatus.COMPLETED, BookingStatus.CANCELLED)
-    BookingStatus.REJECTED -> false
-    BookingStatus.COMPLETED -> false
-    BookingStatus.CANCELLED -> false
-}
-
-private val json = Json
