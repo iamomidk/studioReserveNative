@@ -1,5 +1,6 @@
 package com.studioreserve.config
 
+import com.studioreserve.users.UsersTable
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import org.jetbrains.exposed.sql.Database
@@ -38,14 +39,6 @@ object DatabaseConfig {
         }
         logger.info("Database initialized and tables ensured")
     }
-}
-
-object UsersTable : Table("users") {
-    val id = integer("id").autoIncrement()
-    val email = varchar("email", length = 255).uniqueIndex()
-    val displayName = varchar("display_name", length = 255).nullable()
-
-    override val primaryKey = PrimaryKey(id)
 }
 
 object StudiosTable : Table("studios") {
