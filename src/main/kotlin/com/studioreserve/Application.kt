@@ -1,6 +1,7 @@
 package com.studioreserve
 
 import com.studioreserve.config.DatabaseConfig
+import com.studioreserve.config.configureAuthentication
 import com.studioreserve.config.configureMonitoring
 import com.studioreserve.config.configureRouting
 import com.studioreserve.config.configureSerialization
@@ -12,5 +13,6 @@ fun Application.module() {
     configureSerialization()
     configureMonitoring()
     configureStatusPages()
+    configureAuthentication()
     configureRouting()
 }
