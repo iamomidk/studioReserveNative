@@ -26,6 +26,18 @@ object BookingTimeUtils {
         return start.isBefore(threshold)
     }
 
+    fun isOverlapping(
+        startA: LocalDateTime,
+        endA: LocalDateTime,
+        startB: LocalDateTime,
+        endB: LocalDateTime
+    ): Boolean {
+        require(startA.isBefore(endA)) { "startA must be before endA" }
+        require(startB.isBefore(endB)) { "startB must be before endB" }
+
+        return startA.isBefore(endB) && startB.isBefore(endA)
+    }
+
     fun calculateBilledHours(start: LocalDateTime, end: LocalDateTime): Int {
         val minutes = Duration.between(start, end).toMinutes()
         return ((minutes + 59) / 60).coerceAtLeast(1)
