@@ -42,12 +42,9 @@ enum class PaymentStatus {
     @SerialName("PENDING")
     PENDING,
 
-    @SerialName("SUCCESS")
-    SUCCESS,
+    @SerialName("PAID")
+    PAID,
 
     @SerialName("FAILED")
     FAILED,
-
-    @SerialName("REFUNDED")
-    REFUNDED,
 }
