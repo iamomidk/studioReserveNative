@@ -32,7 +32,7 @@ object BookingSamples {
                 endTime = now.plusDays(1).plusHours(3).toString(),
                 equipmentIds = emptyList(),
                 totalPrice = 540.0,
-                paymentStatus = PaymentStatus.SUCCESS,
+                paymentStatus = PaymentStatus.PAID,
                 bookingStatus = BookingStatus.ACCEPTED,
                 createdAt = now.toString(),
             ),
