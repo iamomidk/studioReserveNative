@@ -1,6 +1,7 @@
 package com.kaj.studioreserve
 
 import com.kaj.studioreserve.config.DatabaseConfig
+import com.kaj.studioreserve.config.StartupValidation
 import com.kaj.studioreserve.config.configureAuthentication
 import com.kaj.studioreserve.config.configureMonitoring
 import com.kaj.studioreserve.config.configureRouting
@@ -9,6 +10,7 @@ import com.kaj.studioreserve.config.configureStatusPages
 import io.ktor.server.application.Application
 
 fun Application.module() {
+    StartupValidation.validateEnvOrThrow()
     DatabaseConfig.initDatabase()
     configureSerialization()
     configureMonitoring()

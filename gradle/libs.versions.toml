@@ -18,6 +18,7 @@ junit = "4.13.2"
 kotlin = "2.2.21"
 kotlinGradlePlugin = "1.9.22"
 kotlinx-coroutines = "1.10.2"
+kotlinx-datetime = "0.6.1"
 ktor = "3.3.2"
 logback = "1.5.21"
 postgresql = "42.7.8"
@@ -46,6 +47,11 @@ org-jetbrains-exposed-exposed-kotlin-datetime2 = { module = "org.jetbrains.expos
 org-jetbrains-exposed-exposed-jdbc2 = { module = "org.jetbrains.exposed:exposed-jdbc", version.ref = "exposedVersion" }
 org-jetbrains-exposed-exposed-core2 = { module = "org.jetbrains.exposed:exposed-core", version.ref = "exposedVersion" }
 postgresql = { module = "org.postgresql:postgresql", version.ref = "postgresql" }
+ktor-client-core = { module = "io.ktor:ktor-client-core", version.ref = "ktor" }
+ktor-client-content-negotiation = { module = "io.ktor:ktor-client-content-negotiation", version.ref = "ktor" }
+ktor-client-logging = { module = "io.ktor:ktor-client-logging", version.ref = "ktor" }
+ktor-serialization-kotlinx-json = { module = "io.ktor:ktor-serialization-kotlinx-json", version.ref = "ktor" }
+kotlinx-datetime = { module = "org.jetbrains.kotlinx:kotlinx-datetime", version.ref = "kotlinx-datetime" }
 
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }
