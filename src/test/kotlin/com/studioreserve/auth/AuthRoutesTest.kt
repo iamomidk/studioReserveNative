@@ -52,7 +52,7 @@ class AuthRoutesTest : IntegrationTestBase() {
         assertTrue(authResponse.accessToken.isNotBlank())
 
         val meResponse = client.get("/api/auth/me") {
-            authenticated(this, authResponse.accessToken)
+            client.authenticated(this, authResponse.accessToken)
         }
 
         assertEquals(HttpStatusCode.OK, meResponse.status)

@@ -54,7 +54,7 @@ class BookingRoutesIntegrationTest : IntegrationTestBase() {
         val end = start.plusSeconds(3600)
 
         val createResponse = client.post("/api/bookings") {
-            authenticated(this, token)
+            client.authenticated(this, token)
             header(HttpHeaders.ContentType, ContentType.Application.Json)
             setBody(
                 CreateBookingRequest(
@@ -71,7 +71,7 @@ class BookingRoutesIntegrationTest : IntegrationTestBase() {
         assertEquals(roomId.toString(), booking.roomId)
 
         val conflictResponse = client.post("/api/bookings") {
-            authenticated(this, token)
+            client.authenticated(this, token)
             header(HttpHeaders.ContentType, ContentType.Application.Json)
             setBody(
                 CreateBookingRequest(
