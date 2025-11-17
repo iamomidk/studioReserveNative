@@ -73,7 +73,7 @@ private fun BookingCard(booking: BookingDto) {
 
 @Composable
 private fun StatusPill(label: String) {
-    val container = if (label == PaymentStatus.SUCCESS.name) {
+    val container = if (label == PaymentStatus.PAID.name) {
         MaterialTheme.colorScheme.tertiaryContainer
     } else {
         MaterialTheme.colorScheme.secondaryContainer
