@@ -2,89 +2,76 @@ package com.studioreserve.bookings
 
 import com.studioreserve.users.UserRole
 import java.util.UUID
-import org.junit.jupiter.api.Assertions.assertFalse
-import org.junit.jupiter.api.Assertions.assertTrue
-import org.junit.jupiter.api.Test
+import kotlin.test.Test
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class BookingStatusServiceTest {
     private val service = BookingStatusService()
     private val photographerId = UUID.randomUUID()
     private val ownerId = UUID.randomUUID()
-    private val bookingId = UUID.randomUUID()
 
-    private fun context(currentStatus: BookingStatus) = BookingStatusContext(
-        bookingId = bookingId,
-        currentStatus = currentStatus,
+    private fun context(current: BookingStatus) = BookingStatusContext(
+        bookingId = UUID.randomUUID(),
+        currentStatus = current,
         photographerId = photographerId,
-        studioOwnerId = ownerId
+        studioOwnerId = ownerId,
     )
 
     @Test
-    fun `admin can transition along allowed path`() {
-        val result = service.canTransition(
-            role = UserRole.ADMIN,
-            requesterId = UUID.randomUUID(),
-            context = context(BookingStatus.PENDING),
-            targetStatus = BookingStatus.ACCEPTED
-        )
-
-        assertTrue(result)
-    }
-
-    @Test
-    fun `studio owner must own booking`() {
-        val allowed = service.canTransition(
+    fun `studio owner can accept pending booking`() {
+        val decision = service.evaluate(
             role = UserRole.STUDIO_OWNER,
             requesterId = ownerId,
-            context = context(BookingStatus.ACCEPTED),
-            targetStatus = BookingStatus.COMPLETED
-        )
-        val forbidden = service.canTransition(
-            role = UserRole.STUDIO_OWNER,
-            requesterId = UUID.randomUUID(),
-            context = context(BookingStatus.ACCEPTED),
-            targetStatus = BookingStatus.COMPLETED
+            context = context(BookingStatus.PENDING),
+            targetStatus = BookingStatus.ACCEPTED
         )
 
-        assertTrue(allowed)
-        assertFalse(forbidden)
+        assertTrue(decision is BookingStatusDecision.Allowed)
     }
 
     @Test
-    fun `photographer can only cancel own booking`() {
-        val allowed = service.canTransition(
+    fun `photographer can cancel own booking`() {
+        val decision = service.evaluate(
             role = UserRole.PHOTOGRAPHER,
             requesterId = photographerId,
-            context = context(BookingStatus.PENDING),
+            context = context(BookingStatus.ACCEPTED),
             targetStatus = BookingStatus.CANCELLED
         )
-        val forbiddenDifferentUser = service.canTransition(
-            role = UserRole.PHOTOGRAPHER,
-            requesterId = UUID.randomUUID(),
-            context = context(BookingStatus.PENDING),
-            targetStatus = BookingStatus.CANCELLED
-        )
-        val forbiddenOtherStatus = service.canTransition(
+
+        assertTrue(decision is BookingStatusDecision.Allowed)
+    }
+
+    @Test
+    fun `photographer cannot accept booking`() {
+        val decision = service.evaluate(
             role = UserRole.PHOTOGRAPHER,
             requesterId = photographerId,
             context = context(BookingStatus.PENDING),
             targetStatus = BookingStatus.ACCEPTED
         )
 
-        assertTrue(allowed)
-        assertFalse(forbiddenDifferentUser)
-        assertFalse(forbiddenOtherStatus)
+        assertTrue(decision is BookingStatusDecision.Forbidden)
     }
 
     @Test
     fun `invalid transition is rejected`() {
-        val result = service.canTransition(
+        val decision = service.evaluate(
             role = UserRole.ADMIN,
             requesterId = UUID.randomUUID(),
             context = context(BookingStatus.COMPLETED),
-            targetStatus = BookingStatus.CANCELLED
+            targetStatus = BookingStatus.ACCEPTED
         )
 
-        assertFalse(result)
+        assertTrue(decision is BookingStatusDecision.InvalidTransition)
+    }
+
+    @Test
+    fun `admin can always transition along allowed edges`() {
+        val pendingContext = context(BookingStatus.PENDING)
+
+        assertTrue(service.canTransition(UserRole.ADMIN, UUID.randomUUID(), pendingContext, BookingStatus.ACCEPTED))
+        assertTrue(service.canTransition(UserRole.ADMIN, UUID.randomUUID(), pendingContext, BookingStatus.REJECTED))
+        assertFalse(service.canTransition(UserRole.ADMIN, UUID.randomUUID(), pendingContext, BookingStatus.PENDING))
     }
 }

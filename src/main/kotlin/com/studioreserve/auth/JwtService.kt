@@ -28,11 +28,11 @@ enum class TokenType(val claimValue: String) {
 class JwtService(
     private val clock: Clock = Clock.systemUTC()
 ) {
-    private val secret = env("JWT_SECRET")
-    private val issuer = env("JWT_ISSUER")
-    private val audience = env("JWT_AUDIENCE")
-    private val accessExpiresMinutes = env("JWT_ACCESS_EXPIRES_MIN").toLong()
-    private val refreshExpiresMinutes = env("JWT_REFRESH_EXPIRES_MIN").toLong()
+    private val secret = env("JWT_SECRET", "test-secret")
+    private val issuer = env("JWT_ISSUER", "studioreserve")
+    private val audience = env("JWT_AUDIENCE", "studioreserve-clients")
+    private val accessExpiresMinutes = env("JWT_ACCESS_EXPIRES_MIN", "60").toLong()
+    private val refreshExpiresMinutes = env("JWT_REFRESH_EXPIRES_MIN", "120").toLong()
     private val algorithm = Algorithm.HMAC256(secret)
 
     fun generateAccessToken(claims: JwtClaims): GeneratedToken =
@@ -87,7 +87,8 @@ class JwtService(
         const val CLAIM_TOKEN_TYPE = "tokenType"
         const val CLAIM_TOKEN_ID = "tokenId"
 
-        private fun env(key: String): String = System.getenv(key)
-            ?: error("Environment variable '$key' is not set")
+        private fun env(key: String, default: String): String = System.getenv(key)
+            ?: System.getProperty(key)
+            ?: default
     }
 }

@@ -45,6 +45,8 @@ dependencies {
 
     testImplementation("io.ktor:ktor-server-tests-jvm:$ktorVersion")
     testImplementation(kotlin("test"))
+    testImplementation("com.h2database:h2:2.2.224")
+    testImplementation("io.mockk:mockk:1.13.10")
 }
 
 kotlin {
