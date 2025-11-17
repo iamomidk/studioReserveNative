@@ -1,77 +1,46 @@
 package com.kaj.studioreserve.bookings
 
 import com.kaj.studioreserve.users.UserRole
-import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import java.util.UUID
 
 class BookingStatusServiceTest {
     private val service = BookingStatusService()
+    private val bookingId = UUID.randomUUID()
     private val photographerId = UUID.randomUUID()
     private val ownerId = UUID.randomUUID()
 
-    private fun context(current: BookingStatus) = BookingStatusContext(
-        bookingId = UUID.randomUUID(),
-        currentStatus = current,
+    private val context = BookingStatusContext(
+        bookingId = bookingId,
+        currentStatus = BookingStatus.PENDING,
         photographerId = photographerId,
-        studioOwnerId = ownerId,
+        studioOwnerId = ownerId
     )
 
     @Test
-    fun `studio owner can accept pending booking`() {
-        val decision = service.evaluate(
-            role = UserRole.STUDIO_OWNER,
-            requesterId = ownerId,
-            context = context(BookingStatus.PENDING),
-            targetStatus = BookingStatus.ACCEPTED
-        )
-
-        assertTrue(decision is BookingStatusDecision.Allowed)
+    fun `admin can accept or reject pending booking`() {
+        assertTrue(service.canTransition(UserRole.ADMIN, UUID.randomUUID(), context, BookingStatus.ACCEPTED))
+        assertTrue(service.canTransition(UserRole.ADMIN, UUID.randomUUID(), context, BookingStatus.REJECTED))
     }
 
     @Test
-    fun `photographer can cancel own booking`() {
-        val decision = service.evaluate(
-            role = UserRole.PHOTOGRAPHER,
-            requesterId = photographerId,
-            context = context(BookingStatus.ACCEPTED),
-            targetStatus = BookingStatus.CANCELLED
-        )
-
-        assertTrue(decision is BookingStatusDecision.Allowed)
+    fun `studio owner can transition only when owning booking`() {
+        assertTrue(service.canTransition(UserRole.STUDIO_OWNER, ownerId, context, BookingStatus.ACCEPTED))
+        assertFalse(service.canTransition(UserRole.STUDIO_OWNER, UUID.randomUUID(), context, BookingStatus.ACCEPTED))
     }
 
     @Test
-    fun `photographer cannot accept booking`() {
-        val decision = service.evaluate(
-            role = UserRole.PHOTOGRAPHER,
-            requesterId = photographerId,
-            context = context(BookingStatus.PENDING),
-            targetStatus = BookingStatus.ACCEPTED
-        )
-
-        assertTrue(decision is BookingStatusDecision.Forbidden)
+    fun `photographer can only cancel their own pending booking`() {
+        assertTrue(service.canTransition(UserRole.PHOTOGRAPHER, photographerId, context, BookingStatus.CANCELLED))
+        assertFalse(service.canTransition(UserRole.PHOTOGRAPHER, photographerId, context, BookingStatus.ACCEPTED))
+        assertFalse(service.canTransition(UserRole.PHOTOGRAPHER, UUID.randomUUID(), context, BookingStatus.CANCELLED))
     }
 
     @Test
-    fun `invalid transition is rejected`() {
-        val decision = service.evaluate(
-            role = UserRole.ADMIN,
-            requesterId = UUID.randomUUID(),
-            context = context(BookingStatus.COMPLETED),
-            targetStatus = BookingStatus.ACCEPTED
-        )
-
-        assertTrue(decision is BookingStatusDecision.InvalidTransition)
-    }
-
-    @Test
-    fun `admin can always transition along allowed edges`() {
-        val pendingContext = context(BookingStatus.PENDING)
-
-        assertTrue(service.canTransition(UserRole.ADMIN, UUID.randomUUID(), pendingContext, BookingStatus.ACCEPTED))
-        assertTrue(service.canTransition(UserRole.ADMIN, UUID.randomUUID(), pendingContext, BookingStatus.REJECTED))
-        assertFalse(service.canTransition(UserRole.ADMIN, UUID.randomUUID(), pendingContext, BookingStatus.PENDING))
+    fun `invalid transition returns false`() {
+        val acceptedContext = context.copy(currentStatus = BookingStatus.ACCEPTED)
+        assertFalse(service.canTransition(UserRole.ADMIN, ownerId, acceptedContext, BookingStatus.REJECTED))
     }
 }

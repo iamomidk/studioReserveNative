@@ -2,6 +2,10 @@ package com.kaj.studioreserve.config
 
 import com.kaj.studioreserve.admin.CommissionSettingsTable
 import com.kaj.studioreserve.auth.RefreshTokensTable
+import com.kaj.studioreserve.bookings.BookingsTable
+import com.kaj.studioreserve.equipment.EquipmentLogsTable
+import com.kaj.studioreserve.equipment.EquipmentTable
+import com.kaj.studioreserve.payments.PaymentsTable
 import com.kaj.studioreserve.studios.RoomsTable
 import com.kaj.studioreserve.studios.StudiosTable
 import com.kaj.studioreserve.users.UsersTable
@@ -44,6 +48,10 @@ object DatabaseConfig {
                 RoomsTable,
                 RefreshTokensTable,
                 CommissionSettingsTable,
+                BookingsTable,
+                PaymentsTable,
+                EquipmentTable,
+                EquipmentLogsTable,
             )
         }
         logger.info("Database initialized and tables ensured")
